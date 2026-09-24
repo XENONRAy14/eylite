@@ -86,7 +86,7 @@ const templates=await (await GET(new Request('https://test.local/api/v1/data?dom
 const templateId=templates.templates[0].id;
 assert.equal((await post({action:'cned-assign',templateId,studentIds:['stu1']})).status,400);
 const subjectId=(await (await post({action:'cned-add-subject',templateId,name:'Anglais'})).json()).id;
-const defA=(await (await post({action:'cned-add-assignment',templateSubjectId:subjectId,reference:'D1',title:'Essai 1'})).json()).id;
+await post({action:'cned-add-assignment',templateSubjectId:subjectId,reference:'D1',title:'Essai 1'});
 await post({action:'cned-add-assignment',templateSubjectId:subjectId,reference:'D2',title:'Essai 2'});
 assert.equal((await post({action:'cned-publish-template',templateId})).status,200);
 assert.equal((await post({action:'cned-add-subject',templateId,name:'Maths'})).status,400);
