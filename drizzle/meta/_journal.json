@@ -29,6 +29,13 @@
       "when": 1790270604567,
       "tag": "0003_awesome_shooting_star",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790270856233,
+      "tag": "0004_worthless_puck",
+      "breakpoints": true
     }
   ]
 }

@@ -96,6 +96,94 @@ export const authVerifications = sqliteTable('verification', {
   updatedAt: integer('updatedAt', { mode: 'timestamp_ms' }),
 });
 
+export const students = sqliteTable('students', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  campusId: text('campus_id').references(() => campuses.id, { onDelete: 'set null' }),
+  userId: text('user_id').references(() => authUsers.id, { onDelete: 'set null' }),
+  firstName: text('first_name').notNull(),
+  lastName: text('last_name').notNull(),
+  birthDate: text('birth_date'),
+  status: text('status', { enum: ['active', 'inactive', 'alumni'] }).notNull().default('active'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('students_org').on(table.organizationId), index('students_user').on(table.userId)]);
+
+export const guardians = sqliteTable('guardians', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  userId: text('user_id').references(() => authUsers.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  email: text('email'),
+  phone: text('phone'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('guardians_org').on(table.organizationId), index('guardians_user').on(table.userId)]);
+
+export const studentGuardians = sqliteTable('student_guardians', {
+  studentId: text('student_id').notNull().references(() => students.id, { onDelete: 'cascade' }),
+  guardianId: text('guardian_id').notNull().references(() => guardians.id, { onDelete: 'cascade' }),
+  relationship: text('relationship').notNull().default(''),
+  canDeclare: integer('can_declare', { mode: 'boolean' }).notNull().default(false),
+}, (table) => [primaryKey({ columns: [table.studentId, table.guardianId] })]);
+
+export const teachers = sqliteTable('teachers', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  campusId: text('campus_id').references(() => campuses.id, { onDelete: 'set null' }),
+  userId: text('user_id').references(() => authUsers.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  email: text('email'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('teachers_org').on(table.organizationId), index('teachers_user').on(table.userId)]);
+
+export const subjects = sqliteTable('subjects', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+}, (table) => [uniqueIndex('subjects_org_name').on(table.organizationId, table.name)]);
+
+export const classGroups = sqliteTable('class_groups', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  schoolYearId: text('school_year_id').notNull().references(() => schoolYears.id, { onDelete: 'cascade' }),
+  campusId: text('campus_id').references(() => campuses.id, { onDelete: 'set null' }),
+  name: text('name').notNull(),
+  type: text('type', { enum: ['class', 'support', 'language', 'activity'] }).notNull().default('class'),
+  level: text('level'),
+  capacity: integer('capacity'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('class_groups_year_name').on(table.schoolYearId, table.name),
+  index('class_groups_org').on(table.organizationId),
+]);
+
+export const studentEnrollments = sqliteTable('student_enrollments', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  studentId: text('student_id').notNull().references(() => students.id, { onDelete: 'cascade' }),
+  schoolYearId: text('school_year_id').notNull().references(() => schoolYears.id, { onDelete: 'cascade' }),
+  groupId: text('group_id').references(() => classGroups.id, { onDelete: 'set null' }),
+  status: text('status', { enum: ['enrolled', 'left', 'completed'] }).notNull().default('enrolled'),
+  startsOn: text('starts_on'),
+  endsOn: text('ends_on'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('enrollments_student_year_group').on(table.studentId, table.schoolYearId, table.groupId),
+  index('enrollments_org').on(table.organizationId),
+]);
+
+export const teacherAssignments = sqliteTable('teacher_assignments', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  teacherId: text('teacher_id').notNull().references(() => teachers.id, { onDelete: 'cascade' }),
+  groupId: text('group_id').notNull().references(() => classGroups.id, { onDelete: 'cascade' }),
+  subjectId: text('subject_id').notNull().references(() => subjects.id, { onDelete: 'cascade' }),
+  schoolYearId: text('school_year_id').notNull().references(() => schoolYears.id, { onDelete: 'cascade' }),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('teacher_assignments_unique').on(table.teacherId, table.groupId, table.subjectId, table.schoolYearId),
+  index('teacher_assignments_org').on(table.organizationId),
+]);
+
 export const records = sqliteTable('records', {
   tenantId: text('tenant_id').notNull(),
   id: text('id').notNull(),
