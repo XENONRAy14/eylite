@@ -163,6 +163,10 @@ export async function GET(request: Request) {
     const access = await context(request);
     const url = new URL(request.url);
     if (url.searchParams.get('domain') === 'cned') return cnedBoard(access);
+    if (url.searchParams.get('domain') === 'students') {
+      const { results } = await access.db.prepare("SELECT id,first_name,last_name,campus_id,status,user_id FROM students WHERE organization_id=? AND status='active' ORDER BY last_name,first_name").bind(access.tenant).all();
+      return respond({ students: results });
+    }
     if (url.searchParams.get('domain') === 'cned-templates') {
       const [templates, subjects, defs] = await Promise.all([
         access.db.prepare('SELECT * FROM cned_templates WHERE organization_id=? ORDER BY created_at DESC').bind(access.tenant).all(),
@@ -453,6 +457,27 @@ async function cnedSetHelp(access: Access, body: MutationRequest) {
   return respond({ ok: true });
 }
 
+async function studentCreate(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const firstName = typeof body.firstName === 'string' ? body.firstName.trim() : '';
+  const lastName = typeof body.lastName === 'string' ? body.lastName.trim() : '';
+  if (!firstName || !lastName) throw new Error('VALIDATION');
+  const campusId = typeof body.campusId === 'string' && body.campusId ? body.campusId : null;
+  if (campusId) {
+    const campus = await access.db.prepare('SELECT id FROM campuses WHERE id=? AND organization_id=?').bind(campusId, access.tenant).first();
+    if (!campus) throw new Error('VALIDATION');
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare("INSERT INTO students (id,organization_id,campus_id,first_name,last_name,birth_date,status,created_at) VALUES (?,?,?,?,?,?,'active',?)")
+      .bind(id, access.tenant, campusId, firstName, lastName, typeof body.birthDate === 'string' && body.birthDate ? body.birthDate : null, now),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), access.tenant, access.user.email, `CRÉER élève ${firstName} ${lastName}`, id, JSON.stringify({ firstName, lastName }), now),
+  ]);
+  return respond({ ok: true, id });
+}
+
 async function cnedSetCorrection(access: Access, body: MutationRequest) {
   requireWrite(access);
   const id = typeof body.studentAssignmentId === 'string' ? body.studentAssignmentId : '';
@@ -514,6 +539,7 @@ export async function POST(request: Request) {
     if (body.action === 'cned-update-status') return await cnedUpdateStatus(access, body);
     if (body.action === 'cned-set-help') return await cnedSetHelp(access, body);
     if (body.action === 'cned-set-correction') return await cnedSetCorrection(access, body);
+    if (body.action === 'student-create') return await studentCreate(access, body);
     requireWrite(access);
 
     if (body.action === 'seed') {

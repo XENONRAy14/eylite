@@ -68,6 +68,41 @@ export async function updateMemberRole(userId: string, role: Role): Promise<void
   await action({ action: 'update-member-role', userId, role }, 'Rôle impossible à modifier.');
 }
 
+export type CnedItem = {
+  id: string; studentId: string; student: string; subject: string; reference: string; title: string;
+  status: 'todo' | 'in_progress' | 'ready' | 'sent_declared' | 'verified' | 'corrected' | 'not_required';
+  targetDate: string | null; targetSource: 'group' | 'individual' | 'none'; officialDueDate: string | null;
+  declaredSentAt: string | null; declaredBy: string | null; verifiedBy: string | null; verifiedAt: string | null;
+  correctedAt: string | null; score: string | null; helpRequested: boolean; lastEventAt: string | null; version: number;
+};
+export type CnedTemplate = { id: string; name: string; level: string | null; formula: string | null; status: 'draft' | 'published' | 'archived'; version: number; school_year_id: string };
+export type CnedTemplateSubject = { id: string; template_id: string; name: string; owner_teacher_id: string | null; state: 'to_fill' | 'submitted' | 'validated' };
+export type CnedDefinition = { id: string; template_subject_id: string; reference: string; title: string; position: number; official_due_date: string | null };
+export type StudentSummary = { id: string; first_name: string; last_name: string; campus_id: string | null; status: string; user_id: string | null };
+
+export async function loadCnedBoard(): Promise<{ items: CnedItem[] }> {
+  const response = await fetch('/api/v1/data?domain=cned');
+  return parseResponse<{ items: CnedItem[] } & ErrorResponse>(response, 'Chargement du suivi CNED impossible.');
+}
+
+export async function loadCnedTemplates(): Promise<{ templates: CnedTemplate[]; subjects: CnedTemplateSubject[]; definitions: CnedDefinition[] }> {
+  const response = await fetch('/api/v1/data?domain=cned-templates');
+  return parseResponse<{ templates: CnedTemplate[]; subjects: CnedTemplateSubject[]; definitions: CnedDefinition[] } & ErrorResponse>(response, 'Chargement du catalogue impossible.');
+}
+
+export async function loadStudents(): Promise<{ students: StudentSummary[] }> {
+  const response = await fetch('/api/v1/data?domain=students');
+  return parseResponse<{ students: StudentSummary[] } & ErrorResponse>(response, 'Chargement des élèves impossible.');
+}
+
+export async function createStudent(data: { firstName: string; lastName: string; campusId?: string; birthDate?: string }): Promise<MutationResponse> {
+  return action({ action: 'student-create', ...data }, 'Création de l’élève impossible.');
+}
+
+export async function cnedAction(body: Record<string, unknown>): Promise<MutationResponse> {
+  return action(body, 'Opération CNED impossible.');
+}
+
 export async function downloadBackup(): Promise<void> {
   const response = await fetch('/api/v1/data?backup=1');
   if (!response.ok) {
