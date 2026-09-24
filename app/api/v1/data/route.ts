@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { getChatGPTUserFromRequest, type ChatGPTUser } from '../../../chatgpt-auth';
 import { getSessionUser } from '@/lib/auth';
+import { canTransition, type CnedStatus, type CnedSource } from '@/lib/cned';
 import { schemas, type Kind } from '@/lib/model';
 import { demoRecords } from '@/lib/seed';
 
@@ -46,6 +47,7 @@ type MutationRequest = {
   role?: unknown;
   token?: unknown;
   userId?: unknown;
+  [key: string]: unknown;
 };
 
 type Access = {
@@ -160,6 +162,15 @@ export async function GET(request: Request) {
   try {
     const access = await context(request);
     const url = new URL(request.url);
+    if (url.searchParams.get('domain') === 'cned') return cnedBoard(access);
+    if (url.searchParams.get('domain') === 'cned-templates') {
+      const [templates, subjects, defs] = await Promise.all([
+        access.db.prepare('SELECT * FROM cned_templates WHERE organization_id=? ORDER BY created_at DESC').bind(access.tenant).all(),
+        access.db.prepare('SELECT ts.* FROM cned_template_subjects ts JOIN cned_templates t ON t.id=ts.template_id WHERE t.organization_id=? ORDER BY ts.position,ts.name').bind(access.tenant).all(),
+        access.db.prepare('SELECT d.* FROM cned_assignment_definitions d JOIN cned_template_subjects ts ON ts.id=d.template_subject_id JOIN cned_templates t ON t.id=ts.template_id WHERE t.organization_id=? ORDER BY d.position,d.reference').bind(access.tenant).all(),
+      ]);
+      return respond({ templates: templates.results, subjects: subjects.results, definitions: defs.results });
+    }
     if (url.searchParams.get('backup') === '1') {
       requireAdmin(access);
       const [recordRows, auditRows, team] = await Promise.all([
@@ -248,6 +259,215 @@ async function revokeInvite(access: Access, body: MutationRequest) {
   return respond({ ok: true });
 }
 
+type CnedRow = {
+  id: string; status: CnedStatus; enrollment_id: string; student_id: string; version: number;
+  student_name: string; subject: string; reference: string; title: string;
+  target_date: string | null; target_override: number; group_target: string | null;
+  official_due_date: string | null; declared_sent_at: string | null; declared_by: string | null;
+  verified_by: string | null; verified_at: string | null; corrected_at: string | null;
+  score: string | null; help_requested: number; last_event_at: string | null;
+};
+
+const CNED_BOARD_SQL = `SELECT a.id,a.status,a.enrollment_id,a.version,a.target_date,a.target_override,
+  a.declared_sent_at,a.declared_by,a.verified_by,a.verified_at,a.corrected_at,a.score,a.help_requested,a.last_event_at,
+  e.student_id,(s.first_name||' '||s.last_name) AS student_name,ts.name AS subject,d.reference,d.title,d.official_due_date,
+  (SELECT gs.target_date FROM cned_group_schedules gs JOIN student_enrollments se ON se.group_id=gs.group_id AND se.student_id=e.student_id AND se.status='enrolled' WHERE gs.assignment_definition_id=a.assignment_definition_id LIMIT 1) AS group_target
+  FROM student_cned_assignments a
+  JOIN student_cned_enrollments e ON e.id=a.enrollment_id
+  JOIN students s ON s.id=e.student_id
+  JOIN cned_assignment_definitions d ON d.id=a.assignment_definition_id
+  JOIN cned_template_subjects ts ON ts.id=d.template_subject_id
+  WHERE a.organization_id=? ORDER BY COALESCE(a.target_date,(SELECT gs.target_date FROM cned_group_schedules gs JOIN student_enrollments se ON se.group_id=gs.group_id AND se.student_id=e.student_id AND se.status='enrolled' WHERE gs.assignment_definition_id=a.assignment_definition_id LIMIT 1))`;
+
+async function cnedBoard(access: Access) {
+  const { results } = await access.db.prepare(CNED_BOARD_SQL).bind(access.tenant).all<CnedRow>();
+  const isStaff = writeRoles.includes(access.role);
+  let rows = results;
+  if (!isStaff) {
+    const linked = await access.db.prepare(
+      `SELECT id FROM students WHERE organization_id=? AND user_id=? UNION SELECT sg.student_id AS id FROM student_guardians sg JOIN guardians g ON g.id=sg.guardian_id WHERE g.organization_id=? AND g.user_id=? AND sg.can_declare=1`,
+    ).bind(access.tenant, access.user.userId, access.tenant, access.user.userId).all<{ id: string }>();
+    const allowed = new Set(linked.results.map((row) => row.id));
+    rows = results.filter((row) => allowed.has(row.student_id));
+  }
+  return respond({
+    items: rows.map((row) => ({
+      id: row.id, studentId: row.student_id, student: row.student_name, subject: row.subject,
+      reference: row.reference, title: row.title, status: row.status,
+      targetDate: row.target_override ? row.target_date : (row.group_target ?? row.target_date),
+      targetSource: row.target_override ? 'individual' : row.group_target ? 'group' : row.target_date ? 'individual' : 'none',
+      officialDueDate: row.official_due_date, declaredSentAt: row.declared_sent_at, declaredBy: row.declared_by,
+      verifiedBy: row.verified_by, verifiedAt: row.verified_at, correctedAt: row.corrected_at,
+      score: row.score, helpRequested: Boolean(row.help_requested), lastEventAt: row.last_event_at, version: row.version,
+    })),
+  });
+}
+
+async function cnedCreateTemplate(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const schoolYearId = typeof body.schoolYearId === 'string' ? body.schoolYearId : '';
+  if (!name || !schoolYearId) throw new Error('VALIDATION');
+  const year = await access.db.prepare('SELECT id FROM school_years WHERE id=? AND organization_id=?').bind(schoolYearId, access.tenant).first();
+  if (!year) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  await access.db.prepare('INSERT INTO cned_templates (id,organization_id,school_year_id,name,level,formula,status,version,created_at) VALUES (?,?,?,?,?,?,?,1,?)')
+    .bind(id, access.tenant, schoolYearId, name, typeof body.level === 'string' ? body.level : null, typeof body.formula === 'string' ? body.formula : null, 'draft', new Date().toISOString()).run();
+  return respond({ ok: true, id });
+}
+
+async function cnedAddSubject(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const templateId = typeof body.templateId === 'string' ? body.templateId : '';
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!templateId || !name) throw new Error('VALIDATION');
+  const template = await access.db.prepare("SELECT id FROM cned_templates WHERE id=? AND organization_id=? AND status='draft'").bind(templateId, access.tenant).first();
+  if (!template) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  const ownerTeacherId = typeof body.ownerTeacherId === 'string' && body.ownerTeacherId ? body.ownerTeacherId : null;
+  await access.db.prepare('INSERT INTO cned_template_subjects (id,template_id,name,owner_teacher_id) VALUES (?,?,?,?)').bind(id, templateId, name, ownerTeacherId).run();
+  return respond({ ok: true, id });
+}
+
+async function cnedAddAssignment(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const templateSubjectId = typeof body.templateSubjectId === 'string' ? body.templateSubjectId : '';
+  const reference = typeof body.reference === 'string' ? body.reference.trim() : '';
+  if (!templateSubjectId || !reference) throw new Error('VALIDATION');
+  const subject = await access.db.prepare('SELECT ts.id FROM cned_template_subjects ts JOIN cned_templates t ON t.id=ts.template_id WHERE ts.id=? AND t.organization_id=? AND t.status=\'draft\'').bind(templateSubjectId, access.tenant).first();
+  if (!subject) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  await access.db.prepare('INSERT INTO cned_assignment_definitions (id,template_subject_id,reference,title,position,official_due_date) VALUES (?,?,?,?,?,?)')
+    .bind(id, templateSubjectId, reference, typeof body.title === 'string' ? body.title : '', Number(body.position) || 0, typeof body.officialDueDate === 'string' && body.officialDueDate ? body.officialDueDate : null).run();
+  return respond({ ok: true, id });
+}
+
+async function cnedPublishTemplate(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const templateId = typeof body.templateId === 'string' ? body.templateId : '';
+  const template = await access.db.prepare("SELECT id FROM cned_templates WHERE id=? AND organization_id=? AND status='draft'").bind(templateId, access.tenant).first();
+  if (!template) throw new Error('VALIDATION');
+  const subjects = await access.db.prepare('SELECT COUNT(*) AS total FROM cned_template_subjects WHERE template_id=?').bind(templateId).first<{ total: number }>();
+  if (!subjects?.total) throw new Error('VALIDATION');
+  const result = await access.db.prepare("UPDATE cned_templates SET status='published',published_at=? WHERE id=? AND status='draft'").bind(new Date().toISOString(), templateId).run();
+  if (!result.meta.changes) throw new Error('CONFLICT');
+  return respond({ ok: true });
+}
+
+async function cnedAssign(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const templateId = typeof body.templateId === 'string' ? body.templateId : '';
+  const studentIds = Array.isArray(body.studentIds) ? body.studentIds.filter((id): id is string => typeof id === 'string') : [];
+  const template = await access.db.prepare("SELECT id,school_year_id FROM cned_templates WHERE id=? AND organization_id=? AND status='published'").bind(templateId, access.tenant).first<{ id: string; school_year_id: string }>();
+  if (!template || !studentIds.length) throw new Error('VALIDATION');
+  const now = new Date().toISOString();
+  let created = 0;
+  for (const studentId of studentIds) {
+    const student = await access.db.prepare("SELECT id FROM students WHERE id=? AND organization_id=? AND status='active'").bind(studentId, access.tenant).first();
+    if (!student) throw new Error('VALIDATION');
+    const enrollmentId = crypto.randomUUID();
+    const enrollment = await access.db.prepare("INSERT OR IGNORE INTO student_cned_enrollments (id,organization_id,student_id,template_id,school_year_id,status,created_at) VALUES (?,?,?,?,?,'active',?)")
+      .bind(enrollmentId, access.tenant, studentId, templateId, template.school_year_id, now).run();
+    const effectiveEnrollment = enrollment.meta.changes
+      ? enrollmentId
+      : (await access.db.prepare('SELECT id FROM student_cned_enrollments WHERE student_id=? AND template_id=?').bind(studentId, templateId).first<{ id: string }>())!.id;
+    const subjects = await access.db.prepare('SELECT id FROM cned_template_subjects WHERE template_id=?').bind(templateId).all<{ id: string }>();
+    for (const subject of subjects.results) {
+      await access.db.prepare('INSERT OR IGNORE INTO student_cned_subjects (enrollment_id,template_subject_id) VALUES (?,?)').bind(effectiveEnrollment, subject.id).run();
+      const defs = await access.db.prepare('SELECT id FROM cned_assignment_definitions WHERE template_subject_id=? ORDER BY position,reference').bind(subject.id).all<{ id: string }>();
+      for (const def of defs.results) {
+        const inserted = await access.db.prepare("INSERT OR IGNORE INTO student_cned_assignments (id,organization_id,enrollment_id,assignment_definition_id,status,created_at) VALUES (?,?,?,?,'todo',?)")
+          .bind(crypto.randomUUID(), access.tenant, effectiveEnrollment, def.id, now).run();
+        created += inserted.meta.changes;
+      }
+    }
+  }
+  await access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)')
+    .bind(crypto.randomUUID(), access.tenant, access.user.email, 'CNED AFFECTER modèle', templateId, JSON.stringify({ students: studentIds.length, created }), now).run();
+  return respond({ ok: true, created });
+}
+
+async function cnedSetTarget(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const targetDate = typeof body.targetDate === 'string' && body.targetDate ? body.targetDate : null;
+  if (typeof body.studentAssignmentId === 'string') {
+    const updated = await access.db.prepare('UPDATE student_cned_assignments SET target_date=?,target_override=1 WHERE id=? AND organization_id=?').bind(targetDate, body.studentAssignmentId, access.tenant).run();
+    if (!updated.meta.changes) throw new Error('VALIDATION');
+    return respond({ ok: true });
+  }
+  const groupId = typeof body.groupId === 'string' ? body.groupId : '';
+  const definitionId = typeof body.assignmentDefinitionId === 'string' ? body.assignmentDefinitionId : '';
+  if (!groupId || !definitionId) throw new Error('VALIDATION');
+  const group = await access.db.prepare('SELECT id FROM class_groups WHERE id=? AND organization_id=?').bind(groupId, access.tenant).first();
+  if (!group) throw new Error('VALIDATION');
+  await access.db.prepare('INSERT INTO cned_group_schedules (id,organization_id,group_id,assignment_definition_id,target_date) VALUES (?,?,?,?,?) ON CONFLICT (group_id,assignment_definition_id) DO UPDATE SET target_date=excluded.target_date')
+    .bind(crypto.randomUUID(), access.tenant, groupId, definitionId, targetDate).run();
+  return respond({ ok: true });
+}
+
+async function cnedUpdateStatus(access: Access, body: MutationRequest) {
+  const id = typeof body.studentAssignmentId === 'string' ? body.studentAssignmentId : '';
+  const status = typeof body.status === 'string' ? body.status : '';
+  const allowed: CnedStatus[] = ['todo', 'in_progress', 'ready', 'sent_declared', 'verified', 'corrected', 'not_required'];
+  if (!id || !allowed.includes(status as CnedStatus)) throw new Error('VALIDATION');
+  const row = await access.db.prepare('SELECT a.*,e.student_id FROM student_cned_assignments a JOIN student_cned_enrollments e ON e.id=a.enrollment_id WHERE a.id=? AND a.organization_id=?').bind(id, access.tenant).first<CnedRow>();
+  if (!row) throw new Error('VALIDATION');
+  const isStaff = writeRoles.includes(access.role);
+  let source: CnedSource = 'school';
+  if (!isStaff) {
+    const own = await access.db.prepare('SELECT id FROM students WHERE id=? AND user_id=?').bind(row.student_id, access.user.userId).first();
+    const guardian = own ? null : await access.db.prepare('SELECT sg.student_id FROM student_guardians sg JOIN guardians g ON g.id=sg.guardian_id WHERE sg.student_id=? AND g.user_id=? AND sg.can_declare=1').bind(row.student_id, access.user.userId).first();
+    if (!own && !guardian) throw new Error('FORBIDDEN');
+    source = own ? 'student' : 'guardian';
+  }
+  const to = status as CnedStatus;
+  if (!canTransition(row.status, to, isStaff)) throw new Error('VALIDATION');
+  if (typeof body.version === 'number' && body.version !== row.version) throw new Error('CONFLICT');
+  const now = new Date().toISOString();
+  const declaredSentAt = to === 'sent_declared' ? (typeof body.declaredSentAt === 'string' && body.declaredSentAt ? body.declaredSentAt : now.slice(0, 10)) : row.declared_sent_at;
+  await access.db.batch([
+    access.db.prepare('UPDATE student_cned_assignments SET status=?,declared_sent_at=?,declared_by=?,verified_by=?,verified_at=?,help_requested=?,last_event_at=?,version=version+1 WHERE id=? AND version=?')
+      .bind(to, declaredSentAt, to === 'sent_declared' ? source : row.declared_by, to === 'verified' ? access.user.userId : row.verified_by, to === 'verified' ? now : row.verified_at, row.help_requested, now, id, row.version),
+    access.db.prepare('INSERT INTO cned_status_events (id,student_assignment_id,from_status,to_status,source,actor_user_id,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), id, row.status, to, source, access.user.userId, typeof body.note === 'string' ? body.note : null, now),
+  ]);
+  return respond({ ok: true });
+}
+
+async function cnedSetHelp(access: Access, body: MutationRequest) {
+  const id = typeof body.studentAssignmentId === 'string' ? body.studentAssignmentId : '';
+  const help = Boolean(body.help);
+  const row = await access.db.prepare('SELECT a.id,a.help_requested,a.version,e.student_id FROM student_cned_assignments a JOIN student_cned_enrollments e ON e.id=a.enrollment_id WHERE a.id=? AND a.organization_id=?').bind(id, access.tenant).first<{ id: string; help_requested: number; version: number; student_id: string }>();
+  if (!row) throw new Error('VALIDATION');
+  const isStaff = writeRoles.includes(access.role);
+  if (!isStaff) {
+    const own = await access.db.prepare('SELECT id FROM students WHERE id=? AND user_id=?').bind(row.student_id, access.user.userId).first();
+    if (!own) throw new Error('FORBIDDEN');
+  }
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare('UPDATE student_cned_assignments SET help_requested=?,last_event_at=?,version=version+1 WHERE id=? AND version=?').bind(help ? 1 : 0, now, id, row.version),
+    access.db.prepare('INSERT INTO cned_status_events (id,student_assignment_id,from_status,to_status,source,actor_user_id,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), id, null, help ? 'help_requested' : 'help_cleared', isStaff ? 'school' : 'student', access.user.userId, typeof body.note === 'string' ? body.note : null, now),
+  ]);
+  return respond({ ok: true });
+}
+
+async function cnedSetCorrection(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const id = typeof body.studentAssignmentId === 'string' ? body.studentAssignmentId : '';
+  const row = await access.db.prepare("SELECT * FROM student_cned_assignments WHERE id=? AND organization_id=? AND status IN ('sent_declared','verified','corrected')").bind(id, access.tenant).first<CnedRow>();
+  if (!row) throw new Error('VALIDATION');
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare("UPDATE student_cned_assignments SET status='corrected',corrected_at=?,score=?,last_event_at=?,version=version+1 WHERE id=? AND version=?")
+      .bind(typeof body.correctedAt === 'string' && body.correctedAt ? body.correctedAt : now.slice(0, 10), typeof body.score === 'string' || typeof body.score === 'number' ? String(body.score) : null, now, id, row.version),
+    access.db.prepare('INSERT INTO cned_status_events (id,student_assignment_id,from_status,to_status,source,actor_user_id,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), id, row.status, 'corrected', 'school', access.user.userId, typeof body.note === 'string' ? body.note : null, now),
+  ]);
+  return respond({ ok: true });
+}
+
 async function migrateLegacy(access: Access) {
   requireAdmin(access);
   await migrateLegacyReferences(access.db, access.tenant);
@@ -285,6 +505,15 @@ export async function POST(request: Request) {
     if (body.action === 'revoke-invite') return await revokeInvite(access, body);
     if (body.action === 'update-member-role') return await updateMember(access, body);
     if (body.action === 'migrate-legacy') return await migrateLegacy(access);
+    if (body.action === 'cned-create-template') return await cnedCreateTemplate(access, body);
+    if (body.action === 'cned-add-subject') return await cnedAddSubject(access, body);
+    if (body.action === 'cned-add-assignment') return await cnedAddAssignment(access, body);
+    if (body.action === 'cned-publish-template') return await cnedPublishTemplate(access, body);
+    if (body.action === 'cned-assign') return await cnedAssign(access, body);
+    if (body.action === 'cned-set-target') return await cnedSetTarget(access, body);
+    if (body.action === 'cned-update-status') return await cnedUpdateStatus(access, body);
+    if (body.action === 'cned-set-help') return await cnedSetHelp(access, body);
+    if (body.action === 'cned-set-correction') return await cnedSetCorrection(access, body);
     requireWrite(access);
 
     if (body.action === 'seed') {

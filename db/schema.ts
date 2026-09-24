@@ -184,6 +184,107 @@ export const teacherAssignments = sqliteTable('teacher_assignments', {
   index('teacher_assignments_org').on(table.organizationId),
 ]);
 
+export const cnedTemplates = sqliteTable('cned_templates', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  schoolYearId: text('school_year_id').notNull().references(() => schoolYears.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  level: text('level'),
+  formula: text('formula'),
+  status: text('status', { enum: ['draft', 'published', 'archived'] }).notNull().default('draft'),
+  version: integer('version').notNull().default(1),
+  sourceTemplateId: text('source_template_id'),
+  createdAt: text('created_at').notNull(),
+  publishedAt: text('published_at'),
+}, (table) => [
+  uniqueIndex('cned_templates_year_name_version').on(table.schoolYearId, table.name, table.version),
+  index('cned_templates_org').on(table.organizationId),
+]);
+
+export const cnedTemplateSubjects = sqliteTable('cned_template_subjects', {
+  id: text('id').primaryKey(),
+  templateId: text('template_id').notNull().references(() => cnedTemplates.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  ownerTeacherId: text('owner_teacher_id').references(() => teachers.id, { onDelete: 'set null' }),
+  state: text('state', { enum: ['to_fill', 'submitted', 'validated'] }).notNull().default('to_fill'),
+  position: integer('position').notNull().default(0),
+}, (table) => [
+  uniqueIndex('cned_subjects_template_name').on(table.templateId, table.name),
+  index('cned_subjects_teacher').on(table.ownerTeacherId),
+]);
+
+export const cnedAssignmentDefinitions = sqliteTable('cned_assignment_definitions', {
+  id: text('id').primaryKey(),
+  templateSubjectId: text('template_subject_id').notNull().references(() => cnedTemplateSubjects.id, { onDelete: 'cascade' }),
+  reference: text('reference').notNull(),
+  title: text('title').notNull().default(''),
+  position: integer('position').notNull().default(0),
+  officialDueDate: text('official_due_date'),
+}, (table) => [
+  uniqueIndex('cned_defs_subject_ref').on(table.templateSubjectId, table.reference),
+  index('cned_defs_subject').on(table.templateSubjectId),
+]);
+
+export const cnedGroupSchedules = sqliteTable('cned_group_schedules', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  groupId: text('group_id').notNull().references(() => classGroups.id, { onDelete: 'cascade' }),
+  assignmentDefinitionId: text('assignment_definition_id').notNull().references(() => cnedAssignmentDefinitions.id, { onDelete: 'cascade' }),
+  targetDate: text('target_date'),
+}, (table) => [uniqueIndex('cned_group_sched_unique').on(table.groupId, table.assignmentDefinitionId)]);
+
+export const studentCnedEnrollments = sqliteTable('student_cned_enrollments', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  studentId: text('student_id').notNull().references(() => students.id, { onDelete: 'cascade' }),
+  templateId: text('template_id').notNull().references(() => cnedTemplates.id, { onDelete: 'restrict' }),
+  schoolYearId: text('school_year_id').notNull().references(() => schoolYears.id, { onDelete: 'cascade' }),
+  status: text('status', { enum: ['active', 'closed'] }).notNull().default('active'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('cned_enroll_student_template').on(table.studentId, table.templateId),
+  index('cned_enroll_org').on(table.organizationId),
+]);
+
+export const studentCnedSubjects = sqliteTable('student_cned_subjects', {
+  enrollmentId: text('enrollment_id').notNull().references(() => studentCnedEnrollments.id, { onDelete: 'cascade' }),
+  templateSubjectId: text('template_subject_id').notNull().references(() => cnedTemplateSubjects.id, { onDelete: 'cascade' }),
+}, (table) => [primaryKey({ columns: [table.enrollmentId, table.templateSubjectId] })]);
+
+export const studentCnedAssignments = sqliteTable('student_cned_assignments', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  enrollmentId: text('enrollment_id').notNull().references(() => studentCnedEnrollments.id, { onDelete: 'cascade' }),
+  assignmentDefinitionId: text('assignment_definition_id').notNull().references(() => cnedAssignmentDefinitions.id, { onDelete: 'restrict' }),
+  status: text('status', { enum: ['todo', 'in_progress', 'ready', 'sent_declared', 'verified', 'corrected', 'not_required'] }).notNull().default('todo'),
+  targetDate: text('target_date'),
+  targetOverride: integer('target_override', { mode: 'boolean' }).notNull().default(false),
+  declaredSentAt: text('declared_sent_at'),
+  declaredBy: text('declared_by'),
+  verifiedBy: text('verified_by'),
+  verifiedAt: text('verified_at'),
+  correctedAt: text('corrected_at'),
+  score: text('score'),
+  helpRequested: integer('help_requested', { mode: 'boolean' }).notNull().default(false),
+  lastEventAt: text('last_event_at'),
+  version: integer('version').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('sca_enrollment_def').on(table.enrollmentId, table.assignmentDefinitionId),
+  index('sca_org_status').on(table.organizationId, table.status),
+]);
+
+export const cnedStatusEvents = sqliteTable('cned_status_events', {
+  id: text('id').primaryKey(),
+  studentAssignmentId: text('student_assignment_id').notNull().references(() => studentCnedAssignments.id, { onDelete: 'cascade' }),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status').notNull(),
+  source: text('source', { enum: ['student', 'guardian', 'school', 'import', 'system'] }).notNull(),
+  actorUserId: text('actor_user_id'),
+  note: text('note'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [index('cned_events_assignment').on(table.studentAssignmentId, table.createdAt)]);
+
 export const records = sqliteTable('records', {
   tenantId: text('tenant_id').notNull(),
   id: text('id').notNull(),
