@@ -1,0 +1,18 @@
+import {DataByKind,Kind,RecordRow,programs} from './model';
+export function demoRecords():RecordRow[]{
+ const out:RecordRow[]=[];const push=<K extends Kind>(kind:K,id:string,data:DataByKind[K])=>out.push({id,kind,data,version:1,createdAt:'2026-09-18T08:00:00Z'} as RecordRow);
+ const names=['Lina Amrani','Yacine Benali','Inès Hamadi','Adam Mekki','Sarah Aït Ali','Rayan Mansouri','Meriem Haddad','Amine Saadi','Nour Belkacem','Ilyes Rahmani','Sofia Boudjemaa','Mehdi Azzi','Anis Kaci','Léa Touati','Sami Bouzid','Aya Brahimi','Yanis Mokrani','Melissa Cherif','Nassim Hamouche','Camélia Ferhat','Rania Belaïd','Walid Meddour','Dina Bensaïd','Omar Ferhani'];
+ const groups=['3e A','1AS Sciences','3e CNED','Maths · BEM','Anglais B1','Développement web'];
+ groups.forEach((name,i)=>push('groups','g'+i,{name,program:programs[i],campus:i===5?'El Kseur':'Béjaïa Centre',capacity:25}));
+ names.forEach((name,i)=>push('students','s'+i,{name,group:'g'+(i%6),program:programs[i%6],campus:i%6===5?'El Kseur':'Béjaïa Centre',guardian:'Responsable de '+name.split(' ')[0],phone:'',status:'Actif'}));
+ ['Sonia Akli','Karim Bensaïd','Nadia Amrane','Rachid Hamdi','Leïla Aït Ahmed','Sofiane Belhadj'].forEach((name,i)=>push('teachers','t'+i,{name,subject:['Mathématiques','Physique-chimie','Français','Anglais','SVT','Informatique'][i],phone:'',campus:i===5?'El Kseur':'Béjaïa Centre'}));
+ const subjects=['Mathématiques','Physique-chimie','Français','Anglais','SVT','Informatique'];
+ for(let day=20;day<=24;day++)for(let j=0;j<4;j++)push('sessions',`se${day}-${j}`,{subject:subjects[j],group:'g'+j,teacher:'t'+j,room:'Salle '+(j+1),date:'2026-09-'+day,start:j<2?'08:00':'10:00',end:j<2?'10:00':'12:00',campus:'Béjaïa Centre'});
+ names.forEach((name,i)=>{push('invoices','i'+i,{student:'s'+i,label:'Scolarité · septembre 2026',amount:i%6===3?4000:12000,due:'2026-09-15',campus:i%6===5?'El Kseur':'Béjaïa Centre'});if(i%4!==1)push('payments','p'+i,{student:'s'+i,invoice:'i'+i,amount:i%6===3?4000:12000,method:i%2?'BaridiMob':'Espèces',date:'2026-09-'+String(5+i%13).padStart(2,'0'),campus:i%6===5?'El Kseur':'Béjaïa Centre'});
+ push('grades','gr'+i,{student:'s'+i,subject:subjects[i%5],title:'Évaluation diagnostique',score:10+i%9,scale:20,coefficient:1,source:'INTERNAL',campus:i%6===5?'El Kseur':'Béjaïa Centre'});
+ if(i%6===2)subjects.slice(0,5).forEach((subject,j)=>push('cned','c'+i+'-'+j,{student:'s'+i,subject,title:'Devoir 01',due:'2026-09-'+(15+j*3),status:['Corrigé','Envoyé','En cours','À faire','À venir'][j],score:j===0?15:'',formula:'Classe complète réglementée',campus:'Béjaïa Centre'}));});
+ for(let j=0;j<4;j++)push('homework','h'+j,{title:['Théorème de Pythagore','Les circuits électriques','Récit autobiographique','Introducing yourself'][j],subject:subjects[j],group:'g'+j,due:'2026-09-25',instructions:'Relire le cours et préparer les exercices de révision.',campus:'Béjaïa Centre'});
+ ['Lounis Abbas','Imane Dahmani','Farès Taleb','Manel Azem','Ishak Lounis','Célia Chabi'].forEach((name,i)=>push('leads','l'+i,{name,program:programs[i],phone:'',source:['Facebook','Recommandation','Téléphone'][i%3] as DataByKind['leads']['source'],status:['Prospect','Contacté','Dossier incomplet','Dossier complet','Accepté','Inscrit'][i] as DataByKind['leads']['status'],campus:'Béjaïa Centre'}));
+ push('announcements','a1',{title:'La rentrée approche !',body:'Les cours débutent le 21 septembre. Les emplois du temps sont disponibles auprès du secrétariat.',target:'Tous',campus:'Béjaïa Centre'});
+ push('settings','settings',{name:'Groupe ELITE',year:'2026–2027',cned:true,finance:true,admissions:true});return out;
+}
