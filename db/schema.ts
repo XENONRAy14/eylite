@@ -43,6 +43,7 @@ export const invitations = sqliteTable('invitations', {
   token: text('token').notNull(),
   status: text('status', { enum: ['pending', 'accepted', 'revoked'] }).notNull().default('pending'),
   createdAt: text('created_at').notNull(),
+  expiresAt: text('expires_at').notNull().default(''),
   acceptedAt: text('accepted_at'),
 }, (table) => [
   uniqueIndex('invitations_token').on(table.token),

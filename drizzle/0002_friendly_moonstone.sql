@@ -1,0 +1,1 @@
+ALTER TABLE `invitations` ADD `expires_at` text DEFAULT '' NOT NULL;

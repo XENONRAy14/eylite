@@ -5,7 +5,7 @@ export type UserSummary = { displayName: string; email: string };
 export type Role = 'owner' | 'admin' | 'staff' | 'viewer';
 export type OrganizationSummary = { id: string; name: string };
 export type MemberSummary = { user_id: string; email: string; display_name: string; role: Role; created_at: string };
-export type InvitationSummary = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; accepted_at: string | null };
+export type InvitationSummary = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null };
 export type CampusSummary = { id: string; name: string };
 export type SchoolYearSummary = { id: string; label: string; starts_on: string; ends_on: string; active: number };
 export type WorkspaceSnapshot = {
@@ -54,6 +54,14 @@ export async function seedWorkspace(): Promise<void> {
 
 export async function inviteMember(email: string, role: Exclude<Role, 'owner'>): Promise<MutationResponse> {
   return action({ action: 'invite', email, role }, 'Invitation impossible.');
+}
+
+export async function revokeInvitation(id: string): Promise<void> {
+  await action({ action: 'revoke-invite', id }, 'Révocation impossible.');
+}
+
+export async function migrateLegacyReferences(): Promise<MutationResponse> {
+  return action({ action: 'migrate-legacy' }, 'Migration impossible.');
 }
 
 export async function updateMemberRole(userId: string, role: Role): Promise<void> {

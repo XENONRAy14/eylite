@@ -32,7 +32,7 @@ type Role = 'owner' | 'admin' | 'staff' | 'viewer';
 type Organization = { id: string; name: string };
 type Membership = { organization_id: string; user_id: string; email: string; display_name: string; role: Role; created_at: string };
 type MembershipWithOrganization = Membership & { organization_name: string };
-type Invitation = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; accepted_at: string | null };
+type Invitation = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null };
 type Campus = { id: string; name: string };
 type SchoolYear = { id: string; label: string; starts_on: string; ends_on: string; active: number };
 type MutationRequest = {
@@ -74,6 +74,13 @@ function currentSchoolYear() {
   return { label: `${start}–${start + 1}`, startsOn: `${start}-09-01`, endsOn: `${start + 1}-08-31` };
 }
 
+const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+async function hashToken(token: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 async function migrateLegacyReferences(db: D1Database, tenant: string) {
   await db.batch([
     db.prepare(`UPDATE records SET payload=json_set(payload,'$.group',(SELECT groups.id FROM records AS groups WHERE groups.tenant_id=records.tenant_id AND groups.kind='groups' AND json_extract(groups.payload,'$.name')=json_extract(records.payload,'$.group') LIMIT 1)) WHERE tenant_id=? AND kind IN ('students','sessions','homework') AND EXISTS (SELECT 1 FROM records AS groups WHERE groups.tenant_id=records.tenant_id AND groups.kind='groups' AND json_extract(groups.payload,'$.name')=json_extract(records.payload,'$.group'))`).bind(tenant),
@@ -84,7 +91,6 @@ async function migrateLegacyReferences(db: D1Database, tenant: string) {
 async function ensureOrganization(db: D1Database, user: ChatGPTUser): Promise<{ tenant: string; role: Role; organization: Organization }> {
   const existing = await db.prepare(`SELECT m.organization_id,m.user_id,m.email,m.display_name,m.role,m.created_at,o.name AS organization_name FROM memberships m JOIN organizations o ON o.id=m.organization_id WHERE m.user_id=? ORDER BY COALESCE(m.last_accessed_at,m.created_at) DESC,m.organization_id ASC LIMIT 1`).bind(user.userId).first<MembershipWithOrganization>();
   if (existing) {
-    await migrateLegacyReferences(db, existing.organization_id);
     return { tenant: existing.organization_id, role: existing.role, organization: { id: existing.organization_id, name: existing.organization_name } };
   }
 
@@ -202,24 +208,50 @@ async function invite(access: Access, body: MutationRequest) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('VALIDATION');
   const id = crypto.randomUUID();
   const token = crypto.randomUUID();
+  const now = new Date();
   await access.db.batch([
-    access.db.prepare("INSERT INTO invitations (id,organization_id,email,role,token,status,created_at) VALUES (?,?,?,?,?,'pending',?)").bind(id, access.tenant, email, role, token, new Date().toISOString()),
-    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, `INVITER ${email}`, id, JSON.stringify({ email, role }), new Date().toISOString()),
+    access.db.prepare("INSERT INTO invitations (id,organization_id,email,role,token,status,created_at,expires_at) VALUES (?,?,?,?,?,'pending',?,?)").bind(id, access.tenant, email, role, await hashToken(token), now.toISOString(), new Date(now.getTime() + INVITATION_TTL_MS).toISOString()),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, `INVITER ${email}`, id, JSON.stringify({ email, role }), now.toISOString()),
   ]);
   return respond({ ok: true, id, token });
 }
 
 async function acceptInvite(access: Access, body: MutationRequest) {
   const token = typeof body.token === 'string' ? body.token : '';
-  const invitation = await access.db.prepare("SELECT * FROM invitations WHERE token=? AND status='pending'").bind(token).first<Invitation & { organization_id: string }>();
+  if (!token) throw new Error('VALIDATION');
+  const hashed = await hashToken(token);
+  const invitation = (await access.db.prepare("SELECT * FROM invitations WHERE token=? AND status='pending'").bind(hashed).first<Invitation & { organization_id: string }>())
+    ?? await access.db.prepare("SELECT * FROM invitations WHERE token=? AND status='pending'").bind(token).first<Invitation & { organization_id: string }>();
   if (!invitation || invitation.email !== access.user.email.toLowerCase()) throw new Error('VALIDATION');
+  if (invitation.expires_at && invitation.expires_at <= new Date().toISOString()) throw new Error('VALIDATION');
   const now = new Date().toISOString();
+  const claimed = await access.db.prepare("UPDATE invitations SET status='accepted',accepted_at=? WHERE id=? AND status='pending'").bind(now, invitation.id).run();
+  if (!claimed.meta.changes) throw new Error('CONFLICT');
+  const member = await access.db.prepare('SELECT role FROM memberships WHERE organization_id=? AND user_id=?').bind(invitation.organization_id, access.user.userId).first<{ role: Role }>();
   await access.db.batch([
-    access.db.prepare('INSERT OR REPLACE INTO memberships (organization_id,user_id,email,display_name,role,created_at,last_accessed_at) VALUES (?,?,?,?,?,?,?)').bind(invitation.organization_id, access.user.userId, access.user.email, access.user.displayName, invitation.role, now, new Date(Date.now() + 1).toISOString()),
-    access.db.prepare("UPDATE invitations SET status='accepted',accepted_at=? WHERE id=?").bind(now, invitation.id),
-    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), invitation.organization_id, access.user.email, 'ACCEPTER invitation', invitation.id, JSON.stringify({ role: invitation.role }), now),
+    access.db.prepare('INSERT INTO memberships (organization_id,user_id,email,display_name,role,created_at,last_accessed_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET last_accessed_at=excluded.last_accessed_at').bind(invitation.organization_id, access.user.userId, access.user.email, access.user.displayName, member?.role ?? invitation.role, now, new Date(Date.now() + 1).toISOString()),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), invitation.organization_id, access.user.email, 'ACCEPTER invitation', invitation.id, JSON.stringify({ role: member?.role ?? invitation.role, keptExistingRole: Boolean(member) }), now),
   ]);
   return respond({ ok: true });
+}
+
+async function revokeInvite(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const id = typeof body.id === 'string' ? body.id : '';
+  if (!id) throw new Error('VALIDATION');
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare("UPDATE invitations SET status='revoked' WHERE id=? AND organization_id=? AND status='pending'").bind(id, access.tenant),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, 'RÉVOQUER invitation', id, null, now),
+  ]);
+  return respond({ ok: true });
+}
+
+async function migrateLegacy(access: Access) {
+  requireAdmin(access);
+  await migrateLegacyReferences(access.db, access.tenant);
+  const unresolved = await access.db.prepare(`SELECT COUNT(*) AS total FROM records WHERE tenant_id=? AND (kind IN ('students','sessions','homework') AND json_extract(payload,'$.group') IS NOT NULL AND json_extract(payload,'$.group') NOT IN (SELECT id FROM records AS g WHERE g.tenant_id=records.tenant_id AND g.kind='groups') OR kind='sessions' AND json_extract(payload,'$.teacher') IS NOT NULL AND json_extract(payload,'$.teacher') NOT IN (SELECT id FROM records AS t WHERE t.tenant_id=records.tenant_id AND t.kind='teachers'))`).bind(access.tenant).first<{ total: number }>();
+  return respond({ ok: true, unresolvedReferences: unresolved?.total ?? 0 });
 }
 
 async function updateMember(access: Access, body: MutationRequest) {
@@ -229,7 +261,11 @@ async function updateMember(access: Access, body: MutationRequest) {
   if (!userId || !role) throw new Error('VALIDATION');
   const target = await access.db.prepare('SELECT role FROM memberships WHERE organization_id=? AND user_id=?').bind(access.tenant, userId).first<{ role: Role }>();
   if (!target) throw new Error('VALIDATION');
-  if (target.role === 'owner' && role !== 'owner') throw new Error('FORBIDDEN');
+  if ((role === 'owner' || target.role === 'owner') && access.role !== 'owner') throw new Error('FORBIDDEN');
+  if (target.role === 'owner' && role !== 'owner') {
+    const owners = await access.db.prepare("SELECT COUNT(*) AS total FROM memberships WHERE organization_id=? AND role='owner'").bind(access.tenant).first<{ total: number }>();
+    if ((owners?.total ?? 0) <= 1) throw new Error('FORBIDDEN');
+  }
   await access.db.batch([
     access.db.prepare('UPDATE memberships SET role=? WHERE organization_id=? AND user_id=?').bind(role, access.tenant, userId),
     access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, `RÔLE ${userId}`, userId, JSON.stringify({ role }), new Date().toISOString()),
@@ -243,9 +279,11 @@ export async function POST(request: Request) {
     if (Number(request.headers.get('content-length') || 0) > 100000) return respond({ error: 'Requête trop volumineuse.' }, 413);
     const body = await request.json() as MutationRequest;
 
-    if (body.action === 'invite') return invite(access, body);
-    if (body.action === 'accept-invite') return acceptInvite(access, body);
-    if (body.action === 'update-member-role') return updateMember(access, body);
+    if (body.action === 'invite') return await invite(access, body);
+    if (body.action === 'accept-invite') return await acceptInvite(access, body);
+    if (body.action === 'revoke-invite') return await revokeInvite(access, body);
+    if (body.action === 'update-member-role') return await updateMember(access, body);
+    if (body.action === 'migrate-legacy') return await migrateLegacy(access);
     requireWrite(access);
 
     if (body.action === 'seed') {
