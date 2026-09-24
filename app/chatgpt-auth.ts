@@ -18,8 +18,16 @@ const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 
+export function getChatGPTUserFromRequest(request: Request): ChatGPTUser | null {
+  return userFromHeaders(request.headers);
+}
+
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
+  return userFromHeaders(requestHeaders);
+}
+
+function userFromHeaders(requestHeaders: Headers): ChatGPTUser | null {
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!userId || !email) return null;

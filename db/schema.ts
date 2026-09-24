@@ -50,6 +50,52 @@ export const invitations = sqliteTable('invitations', {
   index('invitations_org_status').on(table.organizationId, table.status),
 ]);
 
+export const authUsers = sqliteTable('user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull(),
+  emailVerified: integer('emailVerified', { mode: 'boolean' }).notNull().default(false),
+  image: text('image'),
+  createdAt: integer('createdAt', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updatedAt', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => [uniqueIndex('user_email').on(table.email)]);
+
+export const authSessions = sqliteTable('session', {
+  id: text('id').primaryKey(),
+  expiresAt: integer('expiresAt', { mode: 'timestamp_ms' }).notNull(),
+  token: text('token').notNull(),
+  createdAt: integer('createdAt', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updatedAt', { mode: 'timestamp_ms' }).notNull(),
+  ipAddress: text('ipAddress'),
+  userAgent: text('userAgent'),
+  userId: text('userId').notNull().references(() => authUsers.id, { onDelete: 'cascade' }),
+}, (table) => [uniqueIndex('session_token').on(table.token), index('session_user').on(table.userId)]);
+
+export const authAccounts = sqliteTable('account', {
+  id: text('id').primaryKey(),
+  accountId: text('accountId').notNull(),
+  providerId: text('providerId').notNull(),
+  userId: text('userId').notNull().references(() => authUsers.id, { onDelete: 'cascade' }),
+  accessToken: text('accessToken'),
+  refreshToken: text('refreshToken'),
+  idToken: text('idToken'),
+  accessTokenExpiresAt: integer('accessTokenExpiresAt', { mode: 'timestamp_ms' }),
+  refreshTokenExpiresAt: integer('refreshTokenExpiresAt', { mode: 'timestamp_ms' }),
+  scope: text('scope'),
+  password: text('password'),
+  createdAt: integer('createdAt', { mode: 'timestamp_ms' }).notNull(),
+  updatedAt: integer('updatedAt', { mode: 'timestamp_ms' }).notNull(),
+}, (table) => [index('account_user').on(table.userId)]);
+
+export const authVerifications = sqliteTable('verification', {
+  id: text('id').primaryKey(),
+  identifier: text('identifier').notNull(),
+  value: text('value').notNull(),
+  expiresAt: integer('expiresAt', { mode: 'timestamp_ms' }).notNull(),
+  createdAt: integer('createdAt', { mode: 'timestamp_ms' }),
+  updatedAt: integer('updatedAt', { mode: 'timestamp_ms' }),
+});
+
 export const records = sqliteTable('records', {
   tenantId: text('tenant_id').notNull(),
   id: text('id').notNull(),

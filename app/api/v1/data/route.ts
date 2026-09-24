@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
-import { getChatGPTUser, type ChatGPTUser } from '../../../chatgpt-auth';
+import { getChatGPTUserFromRequest, type ChatGPTUser } from '../../../chatgpt-auth';
+import { getSessionUser } from '@/lib/auth';
 import { schemas, type Kind } from '@/lib/model';
 import { demoRecords } from '@/lib/seed';
 
@@ -109,7 +110,7 @@ async function ensureOrganization(db: D1Database, user: ChatGPTUser): Promise<{ 
 }
 
 async function context(request: Request, write = false): Promise<Access> {
-  const user = await getChatGPTUser();
+  const user = (await getSessionUser(request).catch(() => null)) ?? getChatGPTUserFromRequest(request);
   if (!user) throw new Error('AUTH');
   if (write) {
     const origin = request.headers.get('origin');
