@@ -156,4 +156,10 @@ const steal=await (await post({action:'invite',email:'x@test.local',role:'studen
 setUser({userId:'intruder',email:'x@test.local',displayName:'X'});
 assert.equal((await post({action:'accept-invite',token:steal.token})).status,400);
 setUser({userId:'A',email:'owner@test.local',displayName:'Owner A'});
-console.log('PASS: 46 API checks + flux CNED + invitations liées (élève/parent), liaison de compte, accès restreint, déclaration parent autorisée.');
+setUser({userId:'parent-user',email:'parent@test.local',displayName:'Parent'});
+assert.equal((await post({action:'school-year-create',label:'2030-2031',startsOn:'2030-09-01',endsOn:'2031-06-30'})).status,403);
+setUser({userId:'A',email:'owner@test.local',displayName:'Owner A'});
+assert.equal((await post({action:'school-year-create',label:'2030-2031',startsOn:'2031-06-30',endsOn:'2030-09-01'})).status,400);
+const year=await (await post({action:'school-year-create',label:'2030-2031',startsOn:'2030-09-01',endsOn:'2031-06-30'})).json();assert.ok(year.id);
+assert.equal((await post({action:'school-year-create',label:'2030-2031',startsOn:'2030-09-01',endsOn:'2031-06-30'})).status,400);
+console.log('PASS: 46 API checks + flux CNED + invitations liées + année scolaire (admin, dates validées, libellé unique).');

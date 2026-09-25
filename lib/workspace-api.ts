@@ -52,6 +52,10 @@ export async function seedWorkspace(): Promise<void> {
   await action({ action: 'seed' }, 'Chargement impossible.');
 }
 
+export async function createSchoolYear(data: { label: string; startsOn: string; endsOn: string; active?: boolean }): Promise<MutationResponse> {
+  return action({ action: 'school-year-create', ...data }, 'Création de l’année scolaire impossible.');
+}
+
 export type GuardianSummary = { id: string; name: string; email: string | null; phone: string | null; user_id: string | null; student_id: string | null; can_declare: number };
 
 export async function loadGuardians(): Promise<{ guardians: GuardianSummary[] }> {

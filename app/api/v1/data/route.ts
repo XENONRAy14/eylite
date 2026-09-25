@@ -497,6 +497,27 @@ async function cnedSetHelp(access: Access, body: MutationRequest) {
   return respond({ ok: true });
 }
 
+async function schoolYearCreate(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const label = typeof body.label === 'string' ? body.label.trim() : '';
+  const startsOn = typeof body.startsOn === 'string' ? body.startsOn : '';
+  const endsOn = typeof body.endsOn === 'string' ? body.endsOn : '';
+  if (!label || !/^\d{4}-\d{2}-\d{2}$/.test(startsOn) || !/^\d{4}-\d{2}-\d{2}$/.test(endsOn) || endsOn <= startsOn) throw new Error('VALIDATION');
+  const duplicate = await access.db.prepare('SELECT id FROM school_years WHERE organization_id=? AND label=?').bind(access.tenant, label).first();
+  if (duplicate) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [
+    access.db.prepare('INSERT INTO school_years (id,organization_id,label,starts_on,ends_on,active) VALUES (?,?,?,?,?,?)')
+      .bind(id, access.tenant, label, startsOn, endsOn, body.active ? 1 : 0),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), access.tenant, access.user.email, `CRÉER année ${label}`, id, JSON.stringify({ startsOn, endsOn }), now),
+  ];
+  if (body.active) statements.unshift(access.db.prepare('UPDATE school_years SET active=0 WHERE organization_id=?').bind(access.tenant));
+  await access.db.batch(statements);
+  return respond({ ok: true, id });
+}
+
 async function studentCreate(access: Access, body: MutationRequest) {
   requireWrite(access);
   const firstName = typeof body.firstName === 'string' ? body.firstName.trim() : '';
@@ -688,6 +709,7 @@ export async function POST(request: Request) {
     if (body.action === 'cned-update-status') return await cnedUpdateStatus(access, body);
     if (body.action === 'cned-set-help') return await cnedSetHelp(access, body);
     if (body.action === 'cned-set-correction') return await cnedSetCorrection(access, body);
+    if (body.action === 'school-year-create') return await schoolYearCreate(access, body);
     if (body.action === 'student-create') return await studentCreate(access, body);
     if (body.action === 'group-create') return await groupCreate(access, body);
     if (body.action === 'student-enroll') return await studentEnroll(access, body);
