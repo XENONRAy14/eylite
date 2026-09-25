@@ -2,7 +2,7 @@ import type { Kind, RecordRow } from './model';
 
 export type AuditEntry = { id: string; action: string; created_at: string };
 export type UserSummary = { displayName: string; email: string };
-export type Role = 'owner' | 'admin' | 'staff' | 'viewer';
+export type Role = 'owner' | 'admin' | 'staff' | 'viewer' | 'student' | 'guardian';
 export type OrganizationSummary = { id: string; name: string };
 export type MemberSummary = { user_id: string; email: string; display_name: string; role: Role; created_at: string };
 export type InvitationSummary = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null };
@@ -52,8 +52,19 @@ export async function seedWorkspace(): Promise<void> {
   await action({ action: 'seed' }, 'Chargement impossible.');
 }
 
-export async function inviteMember(email: string, role: Exclude<Role, 'owner'>): Promise<MutationResponse> {
-  return action({ action: 'invite', email, role }, 'Invitation impossible.');
+export type GuardianSummary = { id: string; name: string; email: string | null; phone: string | null; user_id: string | null; student_id: string | null; can_declare: number };
+
+export async function loadGuardians(): Promise<{ guardians: GuardianSummary[] }> {
+  const response = await fetch('/api/v1/data?domain=guardians');
+  return parseResponse<{ guardians: GuardianSummary[] } & ErrorResponse>(response, 'Chargement des responsables impossible.');
+}
+
+export async function createGuardian(data: { name: string; email?: string; phone?: string; studentId: string; relationship?: string; canDeclare?: boolean }): Promise<MutationResponse> {
+  return action({ action: 'guardian-create', ...data }, 'Création du responsable impossible.');
+}
+
+export async function inviteMember(email: string, role: Exclude<Role, 'owner'>, linkStudentId?: string, linkGuardianId?: string): Promise<MutationResponse> {
+  return action({ action: 'invite', email, role, linkStudentId, linkGuardianId }, 'Invitation impossible.');
 }
 
 export async function revokeInvitation(id: string): Promise<void> {

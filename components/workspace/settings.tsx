@@ -1,11 +1,11 @@
 'use client';
 
-import type { FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Activity, Building2, ShieldCheck, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import type { DataByKind } from '@/lib/model';
-import { errorMessage, type AuditEntry, type InvitationSummary, type MemberSummary, type Role } from '@/lib/workspace-api';
+import { errorMessage, loadGuardians, loadStudents, type AuditEntry, type GuardianSummary, type InvitationSummary, type MemberSummary, type Role, type StudentSummary } from '@/lib/workspace-api';
 
 type Settings = DataByKind['settings'];
 type TeamRole = Exclude<Role, 'owner'>;
@@ -16,7 +16,7 @@ const modules = [
   ['admissions', 'Admissions', 'Suivi des candidats et dossiers'],
 ] as const;
 
-const roleLabels: Record<Role, string> = { owner: 'Propriétaire', admin: 'Administrateur', staff: 'Équipe', viewer: 'Lecture seule' };
+const roleLabels: Record<Role, string> = { owner: 'Propriétaire', admin: 'Administrateur', staff: 'Équipe', viewer: 'Lecture seule', student: 'Élève', guardian: 'Parent / responsable' };
 
 export function SettingsView({
   settings,
@@ -37,11 +37,19 @@ export function SettingsView({
   members: MemberSummary[];
   invitations: InvitationSummary[];
   onUpdate: (data: Settings) => Promise<unknown>;
-  onInvite: (email: string, role: TeamRole) => Promise<unknown>;
+  onInvite: (email: string, role: TeamRole, linkStudentId?: string, linkGuardianId?: string) => Promise<unknown>;
   onRole: (userId: string, role: Role) => Promise<unknown>;
   onBackup: () => Promise<unknown>;
 }) {
   const canAdminister = role === 'owner' || role === 'admin';
+  const [inviteRole, setInviteRole] = useState<TeamRole>('staff');
+  const [students, setStudents] = useState<StudentSummary[]>([]);
+  const [guardians, setGuardians] = useState<GuardianSummary[]>([]);
+  useEffect(() => {
+    if (!canAdminister) return;
+    void loadStudents().then((data) => setStudents(data.students)).catch(() => {});
+    void loadGuardians().then((data) => setGuardians(data.guardians)).catch(() => {});
+  }, [canAdminister]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -67,7 +75,13 @@ export function SettingsView({
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     try {
-      await onInvite(String(form.get('email') || ''), String(form.get('role') || 'staff') as TeamRole);
+      const inviteeRole = String(form.get('role') || 'staff') as TeamRole;
+      await onInvite(
+        String(form.get('email') || ''),
+        inviteeRole,
+        inviteeRole === 'student' ? String(form.get('linkStudent') || '') || undefined : undefined,
+        inviteeRole === 'guardian' ? String(form.get('linkGuardian') || '') || undefined : undefined,
+      );
       formElement.reset();
     } catch (error: unknown) {
       toast.error(errorMessage(error));
@@ -97,7 +111,7 @@ export function SettingsView({
           {members.map((member) => (
             <div className="module-row" key={member.user_id}>
               <div><strong>{member.display_name}</strong><p>{member.email}</p></div>
-              {member.role === 'owner' || !canAdminister ? <span className="muted">{roleLabels[member.role]}</span> : (
+              {member.role === 'owner' || member.role === 'student' || member.role === 'guardian' || !canAdminister ? <span className="muted">{roleLabels[member.role]}</span> : (
                 <select value={member.role} onChange={(event) => void onRole(member.user_id, event.target.value as Role).catch((error: unknown) => toast.error(errorMessage(error)))}>
                   <option value="admin">Administrateur</option>
                   <option value="staff">Équipe</option>
@@ -110,8 +124,15 @@ export function SettingsView({
         {canAdminister && (
           <form className="settings-form" onSubmit={invite}>
             <label>Invitation par e-mail<input name="email" type="email" placeholder="collegue@ecole.dz" required /></label>
-            <label>Rôle<select name="role" defaultValue="staff"><option value="staff">Équipe</option><option value="admin">Administrateur</option><option value="viewer">Lecture seule</option></select></label>
+            <label>Rôle<select name="role" value={inviteRole} onChange={(event) => setInviteRole(event.target.value as TeamRole)}><option value="staff">Équipe</option><option value="admin">Administrateur</option><option value="viewer">Lecture seule</option><option value="student">Élève</option><option value="guardian">Parent / responsable</option></select></label>
+            {inviteRole === 'student' && (
+              <label>Dossier élève<select name="linkStudent" required><option value="">Choisir…</option>{students.map((student) => <option key={student.id} value={student.id} disabled={!!student.user_id}>{student.first_name} {student.last_name}{student.user_id ? ' (compte lié)' : ''}</option>)}</select></label>
+            )}
+            {inviteRole === 'guardian' && (
+              <label>Responsable<select name="linkGuardian" required><option value="">Choisir…</option>{guardians.map((guardian) => <option key={guardian.id} value={guardian.id} disabled={!!guardian.user_id}>{guardian.name}{guardian.user_id ? ' (compte lié)' : ''}</option>)}</select></label>
+            )}
             <button className="button secondary">Créer une invitation</button>
+            {(inviteRole === 'student' || inviteRole === 'guardian') && <p className="muted">À l’acceptation, le compte sera automatiquement rattaché au dossier sélectionné et limité à ses données.</p>}
           </form>
         )}
         {invitations.length > 0 && <div className="member-list">{invitations.map((invitation) => <div className="module-row" key={invitation.id}><div><strong>{invitation.email}</strong><p>Invitation {roleLabels[invitation.role]} · en attente</p></div></div>)}</div>}

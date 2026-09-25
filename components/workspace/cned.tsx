@@ -7,10 +7,10 @@ import { TableCell, TableRow } from '@/components/ui/table';
 import type { RecordRow } from '@/lib/model';
 import { DataTable, Pill } from './primitives';
 import {
-  cnedAction, createStudent, errorMessage,
-  loadCnedBoard, loadCnedTemplates, loadGroups, loadNotifications, loadStudents,
+  cnedAction, createGuardian, createStudent, errorMessage,
+  loadCnedBoard, loadCnedTemplates, loadGroups, loadGuardians, loadNotifications, loadStudents,
   type CnedItem, type CnedTemplate, type CnedTemplateSubject, type CnedDefinition,
-  type GroupSummary, type NotificationItem, type Role, type SchoolYearSummary, type StudentSummary,
+  type GroupSummary, type GuardianSummary, type NotificationItem, type Role, type SchoolYearSummary, type StudentSummary,
 } from '@/lib/workspace-api';
 
 const submitted = ['Envoyé', 'Correction en attente', 'Corrigé'];
@@ -90,6 +90,8 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
   const [defDraft, setDefDraft] = useState<Record<string, { reference: string; title: string }>>({});
   const [assignSelection, setAssignSelection] = useState<Record<string, boolean>>({});
   const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '' });
+  const [guardians, setGuardians] = useState<GuardianSummary[]>([]);
+  const [newGuardian, setNewGuardian] = useState({ name: '', email: '', studentId: '', canDeclare: true });
   const [busy, setBusy] = useState(false);
 
   const isStaff = role === 'owner' || role === 'admin' || role === 'staff';
@@ -99,12 +101,13 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
     if (demo) return;
     setLoading(true);
     try {
-      const [board, catalog, studentList, groupList, notifList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null), loadNotifications()]);
+      const [board, catalog, studentList, groupList, guardianList, notifList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null), isStaff ? loadGuardians() : Promise.resolve(null), loadNotifications()]);
       setItems(board.items);
       setNotifications(notifList.notifications);
       if (catalog) { setTemplates(catalog.templates); setSubjects(catalog.subjects); setDefinitions(catalog.definitions); }
       if (studentList) setStudents(studentList.students);
       if (groupList) setGroups(groupList.groups);
+      if (guardianList) setGuardians(guardianList.guardians);
     } catch (error: unknown) {
       toast.error(errorMessage(error));
     } finally {
@@ -318,6 +321,18 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
             <label>Prénom élève<input value={newStudent.firstName} onChange={(event) => setNewStudent((current) => ({ ...current, firstName: event.target.value }))} /></label>
             <label>Nom élève<input value={newStudent.lastName} onChange={(event) => setNewStudent((current) => ({ ...current, lastName: event.target.value }))} /></label>
             <button className="button secondary" disabled={busy || !newStudent.firstName || !newStudent.lastName} onClick={async () => { setBusy(true); try { await createStudent(newStudent); toast.success('Élève créé'); setNewStudent({ firstName: '', lastName: '' }); await refresh(); } catch (error: unknown) { toast.error(errorMessage(error)); } finally { setBusy(false); } }}>Ajouter un élève</button>
+          </div>
+
+          <div style={{ borderTop: '1px solid #e5eae7', padding: '14px 20px' }}>
+            <strong>Responsables / parents ({guardians.length})</strong>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8, alignItems: 'end' }}>
+              <label>Nom<input value={newGuardian.name} onChange={(event) => setNewGuardian((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label>E-mail<input type="email" value={newGuardian.email} onChange={(event) => setNewGuardian((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label>Élève rattaché<select value={newGuardian.studentId} onChange={(event) => setNewGuardian((current) => ({ ...current, studentId: event.target.value }))}><option value="">Choisir…</option>{students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}</select></label>
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}><input type="checkbox" checked={newGuardian.canDeclare} onChange={(event) => setNewGuardian((current) => ({ ...current, canDeclare: event.target.checked }))} />Peut déclarer l’envoi</label>
+              <button className="button secondary" disabled={busy || !newGuardian.name || !newGuardian.studentId} onClick={async () => { setBusy(true); try { await createGuardian(newGuardian); toast.success('Responsable créé'); setNewGuardian({ name: '', email: '', studentId: '', canDeclare: true }); await refresh(); } catch (error: unknown) { toast.error(errorMessage(error)); } finally { setBusy(false); } }}>Créer</button>
+            </div>
+            {guardians.length > 0 && <p className="muted" style={{ marginTop: 8 }}>{guardians.map((guardian) => guardian.name).join(' · ')} — pour inviter un parent ou un élève à se connecter, utilisez Paramètres → Équipe &amp; accès.</p>}
           </div>
         </section>
       )}

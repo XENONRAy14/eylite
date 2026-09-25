@@ -30,11 +30,11 @@ type StoredData = {
 };
 
 type ParsedRecord = StoredRecord & { data: StoredData };
-type Role = 'owner' | 'admin' | 'staff' | 'viewer';
+type Role = 'owner' | 'admin' | 'staff' | 'viewer' | 'student' | 'guardian';
 type Organization = { id: string; name: string };
 type Membership = { organization_id: string; user_id: string; email: string; display_name: string; role: Role; created_at: string };
 type MembershipWithOrganization = Membership & { organization_name: string };
-type Invitation = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null };
+type Invitation = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null; link_student_id: string | null; link_guardian_id: string | null };
 type Campus = { id: string; name: string };
 type SchoolYear = { id: string; label: string; starts_on: string; ends_on: string; active: number };
 type MutationRequest = {
@@ -174,6 +174,10 @@ export async function GET(request: Request) {
       const { results } = await access.db.prepare("SELECT id,first_name,last_name,campus_id,status,user_id FROM students WHERE organization_id=? AND status='active' ORDER BY last_name,first_name").bind(access.tenant).all();
       return respond({ students: results });
     }
+    if (url.searchParams.get('domain') === 'guardians') {
+      const { results } = await access.db.prepare('SELECT g.id,g.name,g.email,g.phone,g.user_id,sg.student_id,sg.can_declare FROM guardians g LEFT JOIN student_guardians sg ON sg.guardian_id=g.id WHERE g.organization_id=? ORDER BY g.name').bind(access.tenant).all();
+      return respond({ guardians: results });
+    }
     if (url.searchParams.get('domain') === 'cned-templates') {
       const [templates, subjects, defs] = await Promise.all([
         access.db.prepare('SELECT * FROM cned_templates WHERE organization_id=? ORDER BY created_at DESC').bind(access.tenant).all(),
@@ -181,6 +185,10 @@ export async function GET(request: Request) {
         access.db.prepare('SELECT d.* FROM cned_assignment_definitions d JOIN cned_template_subjects ts ON ts.id=d.template_subject_id JOIN cned_templates t ON t.id=ts.template_id WHERE t.organization_id=? ORDER BY d.position,d.reference').bind(access.tenant).all(),
       ]);
       return respond({ templates: templates.results, subjects: subjects.results, definitions: defs.results });
+    }
+    if (access.role === 'student' || access.role === 'guardian') {
+      const team = await access.db.prepare('SELECT id,label,starts_on,ends_on,active FROM school_years WHERE organization_id=? ORDER BY starts_on DESC').bind(access.tenant).all<SchoolYear>();
+      return respond({ records: [], pagination: { page: 1, pageSize: 0, total: 0, pages: 0 }, audit: [], user: { displayName: access.user.displayName, email: access.user.email }, organization: access.organization, role: access.role, members: [], invitations: [], campuses: [], schoolYears: team.results });
     }
     if (url.searchParams.get('backup') === '1') {
       requireAdmin(access);
@@ -227,13 +235,25 @@ export async function GET(request: Request) {
 async function invite(access: Access, body: MutationRequest) {
   requireAdmin(access);
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
-  const role = body.role === 'admin' || body.role === 'staff' || body.role === 'viewer' ? body.role : 'staff';
+  const role = ['admin', 'staff', 'viewer', 'student', 'guardian'].includes(body.role as string) ? body.role as Exclude<Role, 'owner'> : 'staff';
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('VALIDATION');
+  const linkStudentId = typeof body.linkStudentId === 'string' && body.linkStudentId ? body.linkStudentId : null;
+  const linkGuardianId = typeof body.linkGuardianId === 'string' && body.linkGuardianId ? body.linkGuardianId : null;
+  if (role === 'student') {
+    if (!linkStudentId) throw new Error('VALIDATION');
+    const student = await access.db.prepare('SELECT id FROM students WHERE id=? AND organization_id=?').bind(linkStudentId, access.tenant).first();
+    if (!student) throw new Error('VALIDATION');
+  }
+  if (role === 'guardian') {
+    if (!linkGuardianId) throw new Error('VALIDATION');
+    const guardian = await access.db.prepare('SELECT id FROM guardians WHERE id=? AND organization_id=?').bind(linkGuardianId, access.tenant).first();
+    if (!guardian) throw new Error('VALIDATION');
+  }
   const id = crypto.randomUUID();
   const token = crypto.randomUUID();
   const now = new Date();
   await access.db.batch([
-    access.db.prepare("INSERT INTO invitations (id,organization_id,email,role,token,status,created_at,expires_at) VALUES (?,?,?,?,?,'pending',?,?)").bind(id, access.tenant, email, role, await hashToken(token), now.toISOString(), new Date(now.getTime() + INVITATION_TTL_MS).toISOString()),
+    access.db.prepare("INSERT INTO invitations (id,organization_id,email,role,link_student_id,link_guardian_id,token,status,created_at,expires_at) VALUES (?,?,?,?,?,?,?,'pending',?,?)").bind(id, access.tenant, email, role, linkStudentId, linkGuardianId, await hashToken(token), now.toISOString(), new Date(now.getTime() + INVITATION_TTL_MS).toISOString()),
     access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, `INVITER ${email}`, id, JSON.stringify({ email, role }), now.toISOString()),
   ]);
   return respond({ ok: true, id, token });
@@ -247,14 +267,25 @@ async function acceptInvite(access: Access, body: MutationRequest) {
     ?? await access.db.prepare("SELECT * FROM invitations WHERE token=? AND status='pending'").bind(token).first<Invitation & { organization_id: string }>();
   if (!invitation || invitation.email !== access.user.email.toLowerCase()) throw new Error('VALIDATION');
   if (invitation.expires_at && invitation.expires_at <= new Date().toISOString()) throw new Error('VALIDATION');
+  if (invitation.link_student_id) {
+    const student = await access.db.prepare('SELECT user_id FROM students WHERE id=? AND organization_id=?').bind(invitation.link_student_id, invitation.organization_id).first<{ user_id: string | null }>();
+    if (!student || (student.user_id && student.user_id !== access.user.userId)) throw new Error('VALIDATION');
+  }
+  if (invitation.link_guardian_id) {
+    const guardian = await access.db.prepare('SELECT user_id FROM guardians WHERE id=? AND organization_id=?').bind(invitation.link_guardian_id, invitation.organization_id).first<{ user_id: string | null }>();
+    if (!guardian || (guardian.user_id && guardian.user_id !== access.user.userId)) throw new Error('VALIDATION');
+  }
   const now = new Date().toISOString();
   const claimed = await access.db.prepare("UPDATE invitations SET status='accepted',accepted_at=? WHERE id=? AND status='pending'").bind(now, invitation.id).run();
   if (!claimed.meta.changes) throw new Error('CONFLICT');
   const member = await access.db.prepare('SELECT role FROM memberships WHERE organization_id=? AND user_id=?').bind(invitation.organization_id, access.user.userId).first<{ role: Role }>();
-  await access.db.batch([
+  const statements: D1PreparedStatement[] = [
     access.db.prepare('INSERT INTO memberships (organization_id,user_id,email,display_name,role,created_at,last_accessed_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT (organization_id,user_id) DO UPDATE SET last_accessed_at=excluded.last_accessed_at').bind(invitation.organization_id, access.user.userId, access.user.email, access.user.displayName, member?.role ?? invitation.role, now, new Date(Date.now() + 1).toISOString()),
     access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), invitation.organization_id, access.user.email, 'ACCEPTER invitation', invitation.id, JSON.stringify({ role: member?.role ?? invitation.role, keptExistingRole: Boolean(member) }), now),
-  ]);
+  ];
+  if (invitation.link_student_id) statements.push(access.db.prepare('UPDATE students SET user_id=? WHERE id=?').bind(access.user.userId, invitation.link_student_id));
+  if (invitation.link_guardian_id) statements.push(access.db.prepare('UPDATE guardians SET user_id=? WHERE id=?').bind(access.user.userId, invitation.link_guardian_id));
+  await access.db.batch(statements);
   return respond({ ok: true });
 }
 
@@ -487,6 +518,26 @@ async function studentCreate(access: Access, body: MutationRequest) {
   return respond({ ok: true, id });
 }
 
+async function guardianCreate(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const studentId = typeof body.studentId === 'string' ? body.studentId : '';
+  if (!name || !studentId) throw new Error('VALIDATION');
+  const student = await access.db.prepare('SELECT id FROM students WHERE id=? AND organization_id=?').bind(studentId, access.tenant).first();
+  if (!student) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare('INSERT INTO guardians (id,organization_id,name,email,phone,created_at) VALUES (?,?,?,?,?,?)')
+      .bind(id, access.tenant, name, typeof body.email === 'string' && body.email ? body.email.trim().toLowerCase() : null, typeof body.phone === 'string' && body.phone ? body.phone : null, now),
+    access.db.prepare('INSERT INTO student_guardians (student_id,guardian_id,relationship,can_declare) VALUES (?,?,?,?)')
+      .bind(studentId, id, typeof body.relationship === 'string' ? body.relationship : '', body.canDeclare ? 1 : 0),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), access.tenant, access.user.email, `CRÉER responsable ${name}`, id, JSON.stringify({ studentId }), now),
+  ]);
+  return respond({ ok: true, id });
+}
+
 async function groupCreate(access: Access, body: MutationRequest) {
   requireWrite(access);
   const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -640,6 +691,7 @@ export async function POST(request: Request) {
     if (body.action === 'student-create') return await studentCreate(access, body);
     if (body.action === 'group-create') return await groupCreate(access, body);
     if (body.action === 'student-enroll') return await studentEnroll(access, body);
+    if (body.action === 'guardian-create') return await guardianCreate(access, body);
     if (body.action === 'notifications-run') return await notificationsRun(access);
     requireWrite(access);
 
