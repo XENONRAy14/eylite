@@ -12,6 +12,7 @@ export const memberships = sqliteTable('memberships', {
   email: text('email').notNull(),
   displayName: text('display_name').notNull(),
   role: text('role', { enum: ['owner', 'admin', 'staff', 'viewer', 'student', 'guardian'] }).notNull(),
+  staffFunction: text('staff_function', { enum: ['direction', 'teacher', 'secretariat', 'compta'] }),
   createdAt: text('created_at').notNull(),
   lastAccessedAt: text('last_accessed_at'),
 }, (table) => [

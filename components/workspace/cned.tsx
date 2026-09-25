@@ -7,10 +7,10 @@ import { TableCell, TableRow } from '@/components/ui/table';
 import type { RecordRow } from '@/lib/model';
 import { DataTable, Pill } from './primitives';
 import {
-  cnedAction, createGuardian, createStudent, errorMessage,
-  loadCnedBoard, loadCnedTemplates, loadGroups, loadGuardians, loadNotifications, loadStudents,
+  cnedAction, createGuardian, createStudent, createTeacher, errorMessage,
+  loadCnedBoard, loadCnedTemplates, loadGroups, loadGuardians, loadNotifications, loadStudents, loadTeachers,
   type CnedItem, type CnedTemplate, type CnedTemplateSubject, type CnedDefinition,
-  type GroupSummary, type GuardianSummary, type NotificationItem, type Role, type SchoolYearSummary, type StudentSummary,
+  type GroupSummary, type GuardianSummary, type NotificationItem, type Role, type SchoolYearSummary, type StudentSummary, type TeacherSummary,
 } from '@/lib/workspace-api';
 
 const submitted = ['Envoyé', 'Correction en attente', 'Corrigé'];
@@ -33,6 +33,9 @@ const statusTone: Record<CnedItem['status'], string> = {
 const sourceLabels: Record<CnedItem['targetSource'], string> = {
   group: 'objectif du groupe', individual: 'objectif individuel', none: 'sans date',
 };
+
+const subjectStateLabels: Record<CnedTemplateSubject['state'], string> = { to_fill: 'À compléter', submitted: 'Soumise', validated: 'Validée' };
+const subjectStateTones: Record<CnedTemplateSubject['state'], string> = { to_fill: 'orange', submitted: 'blue', validated: 'green' };
 
 function DemoList({ rows, late, studentName, onEdit }: { rows: RecordRow<'cned'>[]; late: RecordRow<'cned'>[]; studentName: (id: string) => string; onEdit: (row: RecordRow<'cned'>) => void }) {
   return (
@@ -91,6 +94,8 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
   const [assignSelection, setAssignSelection] = useState<Record<string, boolean>>({});
   const [newStudent, setNewStudent] = useState({ firstName: '', lastName: '' });
   const [guardians, setGuardians] = useState<GuardianSummary[]>([]);
+  const [teachers, setTeachers] = useState<TeacherSummary[]>([]);
+  const [newTeacher, setNewTeacher] = useState({ name: '', email: '' });
   const [newGuardian, setNewGuardian] = useState({ name: '', email: '', studentId: '', canDeclare: true });
   const [busy, setBusy] = useState(false);
 
@@ -101,13 +106,14 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
     if (demo) return;
     setLoading(true);
     try {
-      const [board, catalog, studentList, groupList, guardianList, notifList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null), isStaff ? loadGuardians() : Promise.resolve(null), loadNotifications()]);
+      const [board, catalog, studentList, groupList, guardianList, notifList, teacherList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null), isStaff ? loadGuardians() : Promise.resolve(null), loadNotifications(), isStaff ? loadTeachers() : Promise.resolve(null)]);
       setItems(board.items);
       setNotifications(notifList.notifications);
       if (catalog) { setTemplates(catalog.templates); setSubjects(catalog.subjects); setDefinitions(catalog.definitions); }
       if (studentList) setStudents(studentList.students);
       if (groupList) setGroups(groupList.groups);
       if (guardianList) setGuardians(guardianList.guardians);
+      if (teacherList) setTeachers(teacherList.teachers);
     } catch (error: unknown) {
       toast.error(errorMessage(error));
     } finally {
@@ -234,7 +240,17 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
                 <div key={subject.id} style={{ margin: '8px 0 8px 18px' }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <GraduationCap size={14} /><strong>{subject.name}</strong>
+                    <Pill tone={subjectStateTones[subject.state]}>{subjectStateLabels[subject.state]}</Pill>
                     <small className="muted">{definitions.filter((def) => def.template_subject_id === subject.id).length} devoir(s)</small>
+                    {template.status === 'draft' && isAdmin && (
+                      <select aria-label="Enseignant responsable" value={subject.owner_teacher_id ?? ''} disabled={busy} onChange={(event) => void run({ action: 'cned-set-subject-owner', templateSubjectId: subject.id, ownerTeacherId: event.target.value || null }, 'Responsable de matière mis à jour')}>
+                        <option value="">Sans responsable</option>
+                        {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.name}</option>)}
+                      </select>
+                    )}
+                    {template.status === 'draft' && subject.state === 'to_fill' && <button className="text-button" disabled={busy} onClick={() => void run({ action: 'cned-set-subject-state', templateSubjectId: subject.id, state: 'submitted' }, 'Matière soumise')}>Soumettre</button>}
+                    {template.status === 'draft' && subject.state !== 'validated' && <button className="text-button" disabled={busy} onClick={() => void run({ action: 'cned-set-subject-state', templateSubjectId: subject.id, state: 'validated' }, 'Matière validée')}>Valider</button>}
+                    {template.status === 'draft' && subject.state === 'validated' && isAdmin && <button className="text-button" disabled={busy} onClick={() => void run({ action: 'cned-set-subject-state', templateSubjectId: subject.id, state: 'to_fill' }, 'Matière rouverte')}>Rouvrir</button>}
                   </div>
                   <ul style={{ margin: '4px 0 4px 22px' }}>
                     {definitions.filter((def) => def.template_subject_id === subject.id).map((def) => <li key={def.id}><b>{def.reference}</b> {def.title}{def.official_due_date ? ` · officiel ${def.official_due_date}` : ''}</li>)}
@@ -333,6 +349,16 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
               <button className="button secondary" disabled={busy || !newGuardian.name || !newGuardian.studentId} onClick={async () => { setBusy(true); try { await createGuardian(newGuardian); toast.success('Responsable créé'); setNewGuardian({ name: '', email: '', studentId: '', canDeclare: true }); await refresh(); } catch (error: unknown) { toast.error(errorMessage(error)); } finally { setBusy(false); } }}>Créer</button>
             </div>
             {guardians.length > 0 && <p className="muted" style={{ marginTop: 8 }}>{guardians.map((guardian) => guardian.name).join(' · ')} — pour inviter un parent ou un élève à se connecter, utilisez Paramètres → Équipe &amp; accès.</p>}
+          </div>
+
+          <div style={{ borderTop: '1px solid #e5eae7', padding: '14px 20px' }}>
+            <strong>Enseignants ({teachers.length})</strong>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8, alignItems: 'end' }}>
+              <label>Nom<input value={newTeacher.name} onChange={(event) => setNewTeacher((current) => ({ ...current, name: event.target.value }))} /></label>
+              <label>E-mail du compte<input type="email" value={newTeacher.email} onChange={(event) => setNewTeacher((current) => ({ ...current, email: event.target.value }))} placeholder="lie le compte si le membre existe" /></label>
+              <button className="button secondary" disabled={busy || !newTeacher.name} onClick={async () => { setBusy(true); try { await createTeacher(newTeacher); toast.success('Enseignant créé'); setNewTeacher({ name: '', email: '' }); await refresh(); } catch (error: unknown) { toast.error(errorMessage(error)); } finally { setBusy(false); } }}>Créer</button>
+            </div>
+            {teachers.length > 0 && <p className="muted" style={{ marginTop: 8 }}>{teachers.map((teacher) => teacher.name + (teacher.user_id ? '' : ' (sans compte)')).join(' · ')} — attribuez-leur les matières des parcours pour qu’ils les valident.</p>}
           </div>
         </section>
       )}

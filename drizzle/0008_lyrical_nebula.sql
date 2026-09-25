@@ -1,0 +1,1 @@
+ALTER TABLE `memberships` ADD `staff_function` text;

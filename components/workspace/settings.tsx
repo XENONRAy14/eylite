@@ -5,7 +5,7 @@ import { Activity, Building2, ShieldCheck, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Switch } from '@/components/ui/switch';
 import type { DataByKind } from '@/lib/model';
-import { errorMessage, loadGuardians, loadStudents, type AuditEntry, type GuardianSummary, type InvitationSummary, type MemberSummary, type Role, type StudentSummary } from '@/lib/workspace-api';
+import { errorMessage, loadGuardians, loadStudents, type AuditEntry, type GuardianSummary, type InvitationSummary, type MemberSummary, type Role, type StaffFunction, type StudentSummary } from '@/lib/workspace-api';
 
 type Settings = DataByKind['settings'];
 type TeamRole = Exclude<Role, 'owner'>;
@@ -17,6 +17,7 @@ const modules = [
 ] as const;
 
 const roleLabels: Record<Role, string> = { owner: 'Propriétaire', admin: 'Administrateur', staff: 'Équipe', viewer: 'Lecture seule', student: 'Élève', guardian: 'Parent / responsable' };
+const functionLabels: Record<StaffFunction, string> = { direction: 'Direction', teacher: 'Enseignant', secretariat: 'Secrétariat', compta: 'Comptabilité' };
 
 export function SettingsView({
   settings,
@@ -28,6 +29,7 @@ export function SettingsView({
   onUpdate,
   onInvite,
   onRole,
+  onFunction,
   onBackup,
 }: {
   settings: Settings;
@@ -39,6 +41,7 @@ export function SettingsView({
   onUpdate: (data: Settings) => Promise<unknown>;
   onInvite: (email: string, role: TeamRole, linkStudentId?: string, linkGuardianId?: string) => Promise<unknown>;
   onRole: (userId: string, role: Role) => Promise<unknown>;
+  onFunction: (userId: string, staffFunction: StaffFunction | '') => Promise<unknown>;
   onBackup: () => Promise<unknown>;
 }) {
   const canAdminister = role === 'owner' || role === 'admin';
@@ -111,13 +114,24 @@ export function SettingsView({
           {members.map((member) => (
             <div className="module-row" key={member.user_id}>
               <div><strong>{member.display_name}</strong><p>{member.email}</p></div>
-              {member.role === 'owner' || member.role === 'student' || member.role === 'guardian' || !canAdminister ? <span className="muted">{roleLabels[member.role]}</span> : (
-                <select value={member.role} onChange={(event) => void onRole(member.user_id, event.target.value as Role).catch((error: unknown) => toast.error(errorMessage(error)))}>
-                  <option value="admin">Administrateur</option>
-                  <option value="staff">Équipe</option>
-                  <option value="viewer">Lecture seule</option>
-                </select>
-              )}
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {(member.role === 'staff' || member.role === 'admin') && (
+                  <select aria-label="Fonction" value={member.staff_function ?? ''} disabled={!canAdminister} onChange={(event) => void onFunction(member.user_id, event.target.value as StaffFunction | '').catch((error: unknown) => toast.error(errorMessage(error)))}>
+                    <option value="">Fonction…</option>
+                    <option value="direction">Direction</option>
+                    <option value="teacher">Enseignant</option>
+                    <option value="secretariat">Secrétariat</option>
+                    <option value="compta">Comptabilité</option>
+                  </select>
+                )}
+                {member.role === 'owner' || member.role === 'student' || member.role === 'guardian' || !canAdminister ? <span className="muted">{roleLabels[member.role]}{member.staff_function ? ` · ${functionLabels[member.staff_function]}` : ''}</span> : (
+                  <select value={member.role} onChange={(event) => void onRole(member.user_id, event.target.value as Role).catch((error: unknown) => toast.error(errorMessage(error)))}>
+                    <option value="admin">Administrateur</option>
+                    <option value="staff">Équipe</option>
+                    <option value="viewer">Lecture seule</option>
+                  </select>
+                )}
+              </div>
             </div>
           ))}
         </div>

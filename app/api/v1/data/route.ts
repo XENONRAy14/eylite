@@ -151,7 +151,7 @@ function pagination(url: URL) {
 }
 
 async function teamSnapshot(access: Access) {
-  const members = await access.db.prepare('SELECT user_id,email,display_name,role,created_at FROM memberships WHERE organization_id=? ORDER BY created_at').bind(access.tenant).all();
+  const members = await access.db.prepare('SELECT user_id,email,display_name,role,staff_function,created_at FROM memberships WHERE organization_id=? ORDER BY created_at').bind(access.tenant).all();
   const invitations = await access.db.prepare("SELECT id,email,role,status,created_at,accepted_at FROM invitations WHERE organization_id=? AND status='pending' ORDER BY created_at DESC").bind(access.tenant).all<Invitation>();
   const campuses = await access.db.prepare('SELECT id,name FROM campuses WHERE organization_id=? ORDER BY name').bind(access.tenant).all<Campus>();
   const schoolYears = await access.db.prepare('SELECT id,label,starts_on,ends_on,active FROM school_years WHERE organization_id=? ORDER BY starts_on DESC').bind(access.tenant).all<SchoolYear>();
@@ -173,6 +173,10 @@ export async function GET(request: Request) {
     if (url.searchParams.get('domain') === 'students') {
       const { results } = await access.db.prepare("SELECT id,first_name,last_name,campus_id,status,user_id FROM students WHERE organization_id=? AND status='active' ORDER BY last_name,first_name").bind(access.tenant).all();
       return respond({ students: results });
+    }
+    if (url.searchParams.get('domain') === 'teachers') {
+      const { results } = await access.db.prepare('SELECT id,name,email,user_id,campus_id FROM teachers WHERE organization_id=? ORDER BY name').bind(access.tenant).all();
+      return respond({ teachers: results });
     }
     if (url.searchParams.get('domain') === 'guardians') {
       const { results } = await access.db.prepare('SELECT g.id,g.name,g.email,g.phone,g.user_id,sg.student_id,sg.can_declare FROM guardians g LEFT JOIN student_guardians sg ON sg.guardian_id=g.id WHERE g.organization_id=? ORDER BY g.name').bind(access.tenant).all();
@@ -384,13 +388,78 @@ async function cnedAddAssignment(access: Access, body: MutationRequest) {
   return respond({ ok: true, id });
 }
 
+async function actorTeacherId(access: Access) {
+  const row = await access.db.prepare('SELECT id FROM teachers WHERE organization_id=? AND user_id=?').bind(access.tenant, access.user.userId).first<{ id: string }>();
+  return row?.id ?? null;
+}
+
+async function cnedSetSubjectState(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const templateSubjectId = typeof body.templateSubjectId === 'string' ? body.templateSubjectId : '';
+  const state = body.state === 'to_fill' || body.state === 'submitted' || body.state === 'validated' ? body.state : '';
+  if (!templateSubjectId || !state) throw new Error('VALIDATION');
+  const subject = await access.db.prepare("SELECT ts.id,ts.owner_teacher_id,ts.state FROM cned_template_subjects ts JOIN cned_templates t ON t.id=ts.template_id WHERE ts.id=? AND t.organization_id=? AND t.status='draft'").bind(templateSubjectId, access.tenant).first<{ id: string; owner_teacher_id: string | null; state: string }>();
+  if (!subject) throw new Error('VALIDATION');
+  if (!adminRoles.includes(access.role)) {
+    const teacherId = await actorTeacherId(access);
+    if (!teacherId || subject.owner_teacher_id !== teacherId) throw new Error('FORBIDDEN');
+  }
+  await access.db.prepare('UPDATE cned_template_subjects SET state=? WHERE id=?').bind(state, templateSubjectId).run();
+  return respond({ ok: true });
+}
+
+async function cnedSetSubjectOwner(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const templateSubjectId = typeof body.templateSubjectId === 'string' ? body.templateSubjectId : '';
+  const ownerTeacherId = typeof body.ownerTeacherId === 'string' && body.ownerTeacherId ? body.ownerTeacherId : null;
+  const subject = await access.db.prepare("SELECT ts.id FROM cned_template_subjects ts JOIN cned_templates t ON t.id=ts.template_id WHERE ts.id=? AND t.organization_id=? AND t.status='draft'").bind(templateSubjectId, access.tenant).first();
+  if (!subject) throw new Error('VALIDATION');
+  if (ownerTeacherId) {
+    const teacher = await access.db.prepare('SELECT id FROM teachers WHERE id=? AND organization_id=?').bind(ownerTeacherId, access.tenant).first();
+    if (!teacher) throw new Error('VALIDATION');
+  }
+  await access.db.prepare('UPDATE cned_template_subjects SET owner_teacher_id=? WHERE id=?').bind(ownerTeacherId, templateSubjectId).run();
+  return respond({ ok: true });
+}
+
+async function teacherCreate(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  if (!name) throw new Error('VALIDATION');
+  const email = typeof body.email === 'string' && body.email ? body.email.trim().toLowerCase() : null;
+  let userId: string | null = null;
+  if (email) {
+    const member = await access.db.prepare('SELECT user_id FROM memberships WHERE organization_id=? AND email=?').bind(access.tenant, email).first<{ user_id: string }>();
+    userId = member?.user_id ?? null;
+  }
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare('INSERT INTO teachers (id,organization_id,user_id,name,email,created_at) VALUES (?,?,?,?,?,?)').bind(id, access.tenant, userId, name, email, now),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)').bind(crypto.randomUUID(), access.tenant, access.user.email, `CRÉER enseignant ${name}`, id, JSON.stringify({ email }), now),
+  ]);
+  return respond({ ok: true, id });
+}
+
+async function memberSetFunction(access: Access, body: MutationRequest) {
+  requireAdmin(access);
+  const userId = typeof body.userId === 'string' ? body.userId : '';
+  const staffFunction = body.staffFunction === 'direction' || body.staffFunction === 'teacher' || body.staffFunction === 'secretariat' || body.staffFunction === 'compta' ? body.staffFunction : null;
+  if (!userId) throw new Error('VALIDATION');
+  const target = await access.db.prepare("SELECT role FROM memberships WHERE organization_id=? AND user_id=? AND role IN ('staff','admin','viewer')").bind(access.tenant, userId).first();
+  if (!target) throw new Error('VALIDATION');
+  await access.db.prepare('UPDATE memberships SET staff_function=? WHERE organization_id=? AND user_id=?').bind(staffFunction, access.tenant, userId).run();
+  return respond({ ok: true });
+}
+
 async function cnedPublishTemplate(access: Access, body: MutationRequest) {
   requireAdmin(access);
   const templateId = typeof body.templateId === 'string' ? body.templateId : '';
   const template = await access.db.prepare("SELECT id FROM cned_templates WHERE id=? AND organization_id=? AND status='draft'").bind(templateId, access.tenant).first();
   if (!template) throw new Error('VALIDATION');
-  const subjects = await access.db.prepare('SELECT COUNT(*) AS total FROM cned_template_subjects WHERE template_id=?').bind(templateId).first<{ total: number }>();
+  const subjects = await access.db.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN state='validated' THEN 1 ELSE 0 END) AS validated FROM cned_template_subjects WHERE template_id=?").bind(templateId).first<{ total: number; validated: number | null }>();
   if (!subjects?.total) throw new Error('VALIDATION');
+  if ((subjects.validated ?? 0) < subjects.total) return respond({ error: 'Toutes les matières doivent être validées avant la publication.' }, 400);
   const result = await access.db.prepare("UPDATE cned_templates SET status='published',published_at=? WHERE id=? AND status='draft'").bind(new Date().toISOString(), templateId).run();
   if (!result.meta.changes) throw new Error('CONFLICT');
   return respond({ ok: true });
@@ -703,7 +772,11 @@ export async function POST(request: Request) {
     if (body.action === 'cned-create-template') return await cnedCreateTemplate(access, body);
     if (body.action === 'cned-add-subject') return await cnedAddSubject(access, body);
     if (body.action === 'cned-add-assignment') return await cnedAddAssignment(access, body);
+    if (body.action === 'cned-set-subject-state') return await cnedSetSubjectState(access, body);
+    if (body.action === 'cned-set-subject-owner') return await cnedSetSubjectOwner(access, body);
     if (body.action === 'cned-publish-template') return await cnedPublishTemplate(access, body);
+    if (body.action === 'teacher-create') return await teacherCreate(access, body);
+    if (body.action === 'member-set-function') return await memberSetFunction(access, body);
     if (body.action === 'cned-assign') return await cnedAssign(access, body);
     if (body.action === 'cned-set-target') return await cnedSetTarget(access, body);
     if (body.action === 'cned-update-status') return await cnedUpdateStatus(access, body);

@@ -4,7 +4,8 @@ export type AuditEntry = { id: string; action: string; created_at: string };
 export type UserSummary = { displayName: string; email: string };
 export type Role = 'owner' | 'admin' | 'staff' | 'viewer' | 'student' | 'guardian';
 export type OrganizationSummary = { id: string; name: string };
-export type MemberSummary = { user_id: string; email: string; display_name: string; role: Role; created_at: string };
+export type MemberSummary = { user_id: string; email: string; display_name: string; role: Role; staff_function: StaffFunction | null; created_at: string };
+export type StaffFunction = 'direction' | 'teacher' | 'secretariat' | 'compta';
 export type InvitationSummary = { id: string; email: string; role: Exclude<Role, 'owner'>; status: 'pending' | 'accepted' | 'revoked'; created_at: string; expires_at: string; accepted_at: string | null };
 export type CampusSummary = { id: string; name: string };
 export type SchoolYearSummary = { id: string; label: string; starts_on: string; ends_on: string; active: number };
@@ -81,6 +82,21 @@ export async function migrateLegacyReferences(): Promise<MutationResponse> {
 
 export async function updateMemberRole(userId: string, role: Role): Promise<void> {
   await action({ action: 'update-member-role', userId, role }, 'Rôle impossible à modifier.');
+}
+
+export async function updateMemberFunction(userId: string, staffFunction: StaffFunction | ''): Promise<void> {
+  await action({ action: 'member-set-function', userId, staffFunction: staffFunction || null }, 'Fonction impossible à modifier.');
+}
+
+export type TeacherSummary = { id: string; name: string; email: string | null; user_id: string | null; campus_id: string | null };
+
+export async function loadTeachers(): Promise<{ teachers: TeacherSummary[] }> {
+  const response = await fetch('/api/v1/data?domain=teachers');
+  return parseResponse<{ teachers: TeacherSummary[] } & ErrorResponse>(response, 'Chargement des enseignants impossible.');
+}
+
+export async function createTeacher(data: { name: string; email?: string }): Promise<MutationResponse> {
+  return action({ action: 'teacher-create', ...data }, 'Création de l’enseignant impossible.');
 }
 
 export type CnedItem = {
