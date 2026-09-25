@@ -8,9 +8,9 @@ import type { RecordRow } from '@/lib/model';
 import { DataTable, Pill } from './primitives';
 import {
   cnedAction, createStudent, errorMessage,
-  loadCnedBoard, loadCnedTemplates, loadGroups, loadStudents,
+  loadCnedBoard, loadCnedTemplates, loadGroups, loadNotifications, loadStudents,
   type CnedItem, type CnedTemplate, type CnedTemplateSubject, type CnedDefinition,
-  type GroupSummary, type Role, type SchoolYearSummary, type StudentSummary,
+  type GroupSummary, type NotificationItem, type Role, type SchoolYearSummary, type StudentSummary,
 } from '@/lib/workspace-api';
 
 const submitted = ['Envoyé', 'Correction en attente', 'Corrigé'];
@@ -76,6 +76,7 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
   const [definitions, setDefinitions] = useState<CnedDefinition[]>([]);
   const [students, setStudents] = useState<StudentSummary[]>([]);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [newGroup, setNewGroup] = useState({ name: '', type: 'class', level: '', schoolYearId: '' });
   const [enrollDraft, setEnrollDraft] = useState({ studentId: '', groupId: '', schoolYearId: '' });
   const [targetDraft, setTargetDraft] = useState<Record<string, string>>({});
@@ -98,8 +99,9 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
     if (demo) return;
     setLoading(true);
     try {
-      const [board, catalog, studentList, groupList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null)]);
+      const [board, catalog, studentList, groupList, notifList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null), loadNotifications()]);
       setItems(board.items);
+      setNotifications(notifList.notifications);
       if (catalog) { setTemplates(catalog.templates); setSubjects(catalog.subjects); setDefinitions(catalog.definitions); }
       if (studentList) setStudents(studentList.students);
       if (groupList) setGroups(groupList.groups);
@@ -136,6 +138,18 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
         <div><h2>Suivi CNED, déclaré et vérifié.</h2><p>Le dépôt et la correction restent sur le site du CNED. Eylite suit où chacun en est.</p></div>
         <div className="cned-progress"><b>{items.filter((item) => ['sent_declared', 'verified', 'corrected'].includes(item.status)).length} / {items.filter((item) => item.status !== 'not_required').length}</b><span>envois déclarés ou validés</span></div>
       </div>
+
+      {notifications.length > 0 && (
+        <section className="panel">
+          <div className="panel-head"><h2>À traiter</h2><Pill tone="orange">{notifications.length}</Pill></div>
+          {notifications.slice(0, 8).map((notification) => (
+            <div key={notification.id} className="agenda-row">
+              <Pill tone={notification.type === 'help' ? 'orange' : notification.type === 'stale' ? 'gray' : 'blue'}>{notification.type === 'help' ? 'Aide' : notification.type === 'stale' ? 'À actualiser' : 'Rappel'}</Pill>
+              <div className="lesson-info"><span>{notification.message}</span></div>
+            </div>
+          ))}
+        </section>
+      )}
 
       {isStaff && (
         <section className="panel">

@@ -114,6 +114,13 @@ export async function enrollStudent(data: { studentId: string; groupId: string; 
   return action({ action: 'student-enroll', ...data }, 'Inscription au groupe impossible.');
 }
 
+export type NotificationItem = { id: string; type: 'reminder' | 'stale' | 'help'; message: string; audience: 'student' | 'guardian' | 'staff'; read_at: string | null; created_at: string; student_assignment_id: string | null };
+
+export async function loadNotifications(): Promise<{ notifications: NotificationItem[] }> {
+  const response = await fetch('/api/v1/data?domain=notifications');
+  return parseResponse<{ notifications: NotificationItem[] } & ErrorResponse>(response, 'Chargement des notifications impossible.');
+}
+
 export async function cnedAction(body: Record<string, unknown>): Promise<MutationResponse> {
   return action(body, 'Opération CNED impossible.');
 }

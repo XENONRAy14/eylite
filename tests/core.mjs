@@ -124,4 +124,18 @@ assert.equal((await post({action:'cned-set-target',studentAssignmentId:targeted.
 board=await (await GET(new Request('https://test.local/api/v1/data?domain=cned'))).json();
 const overridden=board.items.find(r=>r.id===targeted.id);
 assert.equal(overridden.targetDate,'2026-11-10');assert.equal(overridden.targetSource,'individual');
+let notifs=await (await GET(new Request('https://test.local/api/v1/data?domain=notifications'))).json();
+assert.ok(notifs.notifications.some(n=>n.type==='help'));
+const tomorrow=new Date(Date.now()+86400000).toISOString().slice(0,10);
+assert.equal((await post({action:'cned-set-target',studentAssignmentId:overridden.id,targetDate:tomorrow})).status,200);
+assert.equal((await post({action:'notifications-run'})).status,200);
+await post({action:'notifications-run'});
+const countBefore=sqlite.prepare('SELECT COUNT(*) AS n FROM notifications').get().n;
+await post({action:'notifications-run'});
+assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM notifications').get().n,countBefore);
+setUser({userId:'student-user',email:'lina@test.local',displayName:'Lina'});
+notifs=await (await GET(new Request('https://test.local/api/v1/data?domain=notifications'))).json();
+assert.ok(notifs.notifications.every(n=>n.recipient_user_id==='student-user'));
+assert.ok(notifs.notifications.some(n=>n.type==='reminder'&&n.message.includes('Anglais')));
+setUser({userId:'A',email:'owner@test.local',displayName:'Owner A'});
 console.log('PASS: 46 API checks + flux CNED (modèle, publication, affectation idempotente, déclaration élève, vérification, correction, historique).');

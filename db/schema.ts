@@ -285,6 +285,22 @@ export const cnedStatusEvents = sqliteTable('cned_status_events', {
   createdAt: text('created_at').notNull(),
 }, (table) => [index('cned_events_assignment').on(table.studentAssignmentId, table.createdAt)]);
 
+export const notifications = sqliteTable('notifications', {
+  id: text('id').primaryKey(),
+  organizationId: text('organization_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  studentAssignmentId: text('student_assignment_id').references(() => studentCnedAssignments.id, { onDelete: 'cascade' }),
+  recipientUserId: text('recipient_user_id'),
+  audience: text('audience', { enum: ['student', 'guardian', 'staff'] }).notNull(),
+  type: text('type', { enum: ['reminder', 'stale', 'help'] }).notNull(),
+  dedupeKey: text('dedupe_key').notNull(),
+  message: text('message').notNull(),
+  readAt: text('read_at'),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  uniqueIndex('notifications_dedupe').on(table.organizationId, table.dedupeKey),
+  index('notifications_org_audience').on(table.organizationId, table.audience, table.createdAt),
+]);
+
 export const records = sqliteTable('records', {
   tenantId: text('tenant_id').notNull(),
   id: text('id').notNull(),

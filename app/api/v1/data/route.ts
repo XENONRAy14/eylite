@@ -163,6 +163,7 @@ export async function GET(request: Request) {
     const access = await context(request);
     const url = new URL(request.url);
     if (url.searchParams.get('domain') === 'cned') return cnedBoard(access);
+    if (url.searchParams.get('domain') === 'notifications') return notificationsFeed(access);
     if (url.searchParams.get('domain') === 'groups') {
       const { results } = await access.db.prepare(`SELECT g.id,g.name,g.type,g.level,g.school_year_id,g.campus_id,
         (SELECT COUNT(*) FROM student_enrollments se WHERE se.group_id=g.id AND se.status='enrolled') AS members
@@ -441,6 +442,7 @@ async function cnedUpdateStatus(access: Access, body: MutationRequest) {
     access.db.prepare('INSERT INTO cned_status_events (id,student_assignment_id,from_status,to_status,source,actor_user_id,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
       .bind(crypto.randomUUID(), id, row.status, to, source, access.user.userId, typeof body.note === 'string' ? body.note : null, now),
   ]);
+  await runNotificationSweep(access);
   return respond({ ok: true });
 }
 
@@ -460,6 +462,7 @@ async function cnedSetHelp(access: Access, body: MutationRequest) {
     access.db.prepare('INSERT INTO cned_status_events (id,student_assignment_id,from_status,to_status,source,actor_user_id,note,created_at) VALUES (?,?,?,?,?,?,?,?)')
       .bind(crypto.randomUUID(), id, null, help ? 'help_requested' : 'help_cleared', isStaff ? 'school' : 'student', access.user.userId, typeof body.note === 'string' ? body.note : null, now),
   ]);
+  await runNotificationSweep(access);
   return respond({ ok: true });
 }
 
@@ -535,6 +538,59 @@ async function cnedSetCorrection(access: Access, body: MutationRequest) {
   return respond({ ok: true });
 }
 
+const REMINDER_WINDOW_DAYS = 2;
+const STALE_DAYS = 7;
+
+async function runNotificationSweep(access: Access) {
+  const { results } = await access.db.prepare(`SELECT a.id,a.status,a.help_requested,a.last_event_at,a.created_at,a.target_date,a.target_override,
+    e.student_id,s.user_id AS student_user_id,ts.name AS subject,d.reference,
+    (SELECT gs.target_date FROM cned_group_schedules gs JOIN student_enrollments se ON se.group_id=gs.group_id AND se.student_id=e.student_id AND se.status='enrolled' WHERE gs.assignment_definition_id=a.assignment_definition_id LIMIT 1) AS group_target
+    FROM student_cned_assignments a
+    JOIN student_cned_enrollments e ON e.id=a.enrollment_id
+    JOIN students s ON s.id=e.student_id
+    JOIN cned_assignment_definitions d ON d.id=a.assignment_definition_id
+    JOIN cned_template_subjects ts ON ts.id=d.template_subject_id
+    WHERE a.organization_id=? AND a.status NOT IN ('verified','corrected','not_required')`).bind(access.tenant)
+    .all<{ id: string; status: string; help_requested: number; last_event_at: string | null; created_at: string; target_date: string | null; target_override: number; student_id: string; student_user_id: string | null; subject: string; reference: string; group_target: string | null }>();
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const soon = new Date(now.getTime() + REMINDER_WINDOW_DAYS * 86400000).toISOString().slice(0, 10);
+  const staleBefore = new Date(now.getTime() - STALE_DAYS * 86400000).toISOString();
+  const inserts: D1PreparedStatement[] = [];
+  for (const row of results) {
+    const label = `${row.subject} — ${row.reference}`;
+    const target = row.target_override ? row.target_date : row.group_target ?? row.target_date;
+    if (row.help_requested) {
+      inserts.push(access.db.prepare("INSERT OR IGNORE INTO notifications (id,organization_id,student_assignment_id,recipient_user_id,audience,type,dedupe_key,message,created_at) VALUES (?,?,?,NULL,'staff','help',?,?,?)")
+        .bind(crypto.randomUUID(), access.tenant, row.id, `help:${row.id}:${row.last_event_at ?? row.created_at}`, `${label} : un élève demande de l’aide.`, now.toISOString()));
+    }
+    if (target && target >= today && target <= soon && ['todo', 'in_progress', 'ready'].includes(row.status)) {
+      inserts.push(access.db.prepare("INSERT OR IGNORE INTO notifications (id,organization_id,student_assignment_id,recipient_user_id,audience,type,dedupe_key,message,created_at) VALUES (?,?,?,?,'student','reminder',?,?,?)")
+        .bind(crypto.randomUUID(), access.tenant, row.id, row.student_user_id, `rem:${row.id}:${target}`, `${label} : objectif d’envoi le ${target.split('-').reverse().join('/')}. Où en es-tu ?`, now.toISOString()));
+    }
+    const lastActivity = row.last_event_at ?? row.created_at;
+    if (['todo', 'in_progress'].includes(row.status) && lastActivity <= staleBefore) {
+      inserts.push(access.db.prepare("INSERT OR IGNORE INTO notifications (id,organization_id,student_assignment_id,recipient_user_id,audience,type,dedupe_key,message,created_at) VALUES (?,?,?,NULL,'staff','stale',?,?,?)")
+        .bind(crypto.randomUUID(), access.tenant, row.id, `stale:${row.id}:${target ?? 'none'}`, `${label} : situation non actualisée depuis plus de ${STALE_DAYS} jours.`, now.toISOString()));
+    }
+  }
+  for (let start = 0; start < inserts.length; start += 50) await access.db.batch(inserts.slice(start, start + 50));
+  return inserts.length;
+}
+
+async function notificationsRun(access: Access) {
+  requireAdmin(access);
+  return respond({ ok: true, generated: await runNotificationSweep(access) });
+}
+
+async function notificationsFeed(access: Access) {
+  const isStaff = writeRoles.includes(access.role);
+  const { results } = isStaff
+    ? await access.db.prepare("SELECT * FROM notifications WHERE organization_id=? AND audience='staff' ORDER BY created_at DESC LIMIT 50").bind(access.tenant).all()
+    : await access.db.prepare("SELECT * FROM notifications WHERE organization_id=? AND recipient_user_id=? ORDER BY created_at DESC LIMIT 50").bind(access.tenant, access.user.userId).all();
+  return respond({ notifications: results });
+}
+
 async function migrateLegacy(access: Access) {
   requireAdmin(access);
   await migrateLegacyReferences(access.db, access.tenant);
@@ -584,6 +640,7 @@ export async function POST(request: Request) {
     if (body.action === 'student-create') return await studentCreate(access, body);
     if (body.action === 'group-create') return await groupCreate(access, body);
     if (body.action === 'student-enroll') return await studentEnroll(access, body);
+    if (body.action === 'notifications-run') return await notificationsRun(access);
     requireWrite(access);
 
     if (body.action === 'seed') {
