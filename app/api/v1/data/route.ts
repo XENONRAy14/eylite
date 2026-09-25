@@ -163,6 +163,12 @@ export async function GET(request: Request) {
     const access = await context(request);
     const url = new URL(request.url);
     if (url.searchParams.get('domain') === 'cned') return cnedBoard(access);
+    if (url.searchParams.get('domain') === 'groups') {
+      const { results } = await access.db.prepare(`SELECT g.id,g.name,g.type,g.level,g.school_year_id,g.campus_id,
+        (SELECT COUNT(*) FROM student_enrollments se WHERE se.group_id=g.id AND se.status='enrolled') AS members
+        FROM class_groups g WHERE g.organization_id=? ORDER BY g.name`).bind(access.tenant).all();
+      return respond({ groups: results });
+    }
     if (url.searchParams.get('domain') === 'students') {
       const { results } = await access.db.prepare("SELECT id,first_name,last_name,campus_id,status,user_id FROM students WHERE organization_id=? AND status='active' ORDER BY last_name,first_name").bind(access.tenant).all();
       return respond({ students: results });
@@ -478,6 +484,42 @@ async function studentCreate(access: Access, body: MutationRequest) {
   return respond({ ok: true, id });
 }
 
+async function groupCreate(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const schoolYearId = typeof body.schoolYearId === 'string' ? body.schoolYearId : '';
+  const type = typeof body.type === 'string' && ['class', 'support', 'language', 'activity'].includes(body.type) ? body.type : 'class';
+  if (!name || !schoolYearId) throw new Error('VALIDATION');
+  const year = await access.db.prepare('SELECT id FROM school_years WHERE id=? AND organization_id=?').bind(schoolYearId, access.tenant).first();
+  if (!year) throw new Error('VALIDATION');
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await access.db.batch([
+    access.db.prepare('INSERT INTO class_groups (id,organization_id,school_year_id,campus_id,name,type,level,created_at) VALUES (?,?,?,?,?,?,?,?)')
+      .bind(id, access.tenant, schoolYearId, typeof body.campusId === 'string' && body.campusId ? body.campusId : null, name, type, typeof body.level === 'string' && body.level ? body.level : null, now),
+    access.db.prepare('INSERT INTO audit (id,tenant_id,actor,action,record_id,after,created_at) VALUES (?,?,?,?,?,?,?)')
+      .bind(crypto.randomUUID(), access.tenant, access.user.email, `CRÉER groupe ${name}`, id, JSON.stringify({ name, type }), now),
+  ]);
+  return respond({ ok: true, id });
+}
+
+async function studentEnroll(access: Access, body: MutationRequest) {
+  requireWrite(access);
+  const studentId = typeof body.studentId === 'string' ? body.studentId : '';
+  const groupId = typeof body.groupId === 'string' ? body.groupId : '';
+  const schoolYearId = typeof body.schoolYearId === 'string' ? body.schoolYearId : '';
+  if (!studentId || !groupId || !schoolYearId) throw new Error('VALIDATION');
+  const [student, group] = await Promise.all([
+    access.db.prepare('SELECT id FROM students WHERE id=? AND organization_id=?').bind(studentId, access.tenant).first(),
+    access.db.prepare('SELECT id FROM class_groups WHERE id=? AND organization_id=? AND school_year_id=?').bind(groupId, access.tenant, schoolYearId).first(),
+  ]);
+  if (!student || !group) throw new Error('VALIDATION');
+  const now = new Date().toISOString();
+  await access.db.prepare("INSERT INTO student_enrollments (id,organization_id,student_id,school_year_id,group_id,status,starts_on,created_at) VALUES (?,?,?,?,?,'enrolled',?,?) ON CONFLICT (student_id,school_year_id,group_id) DO UPDATE SET status='enrolled'")
+    .bind(crypto.randomUUID(), access.tenant, studentId, schoolYearId, groupId, typeof body.startsOn === 'string' && body.startsOn ? body.startsOn : now.slice(0, 10), now).run();
+  return respond({ ok: true });
+}
+
 async function cnedSetCorrection(access: Access, body: MutationRequest) {
   requireWrite(access);
   const id = typeof body.studentAssignmentId === 'string' ? body.studentAssignmentId : '';
@@ -540,6 +582,8 @@ export async function POST(request: Request) {
     if (body.action === 'cned-set-help') return await cnedSetHelp(access, body);
     if (body.action === 'cned-set-correction') return await cnedSetCorrection(access, body);
     if (body.action === 'student-create') return await studentCreate(access, body);
+    if (body.action === 'group-create') return await groupCreate(access, body);
+    if (body.action === 'student-enroll') return await studentEnroll(access, body);
     requireWrite(access);
 
     if (body.action === 'seed') {

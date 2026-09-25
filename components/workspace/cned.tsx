@@ -7,9 +7,10 @@ import { TableCell, TableRow } from '@/components/ui/table';
 import type { RecordRow } from '@/lib/model';
 import { DataTable, Pill } from './primitives';
 import {
-  cnedAction, createStudent, errorMessage, loadCnedBoard, loadCnedTemplates, loadStudents,
+  cnedAction, createStudent, errorMessage,
+  loadCnedBoard, loadCnedTemplates, loadGroups, loadStudents,
   type CnedItem, type CnedTemplate, type CnedTemplateSubject, type CnedDefinition,
-  type Role, type SchoolYearSummary, type StudentSummary,
+  type GroupSummary, type Role, type SchoolYearSummary, type StudentSummary,
 } from '@/lib/workspace-api';
 
 const submitted = ['Envoyé', 'Correction en attente', 'Corrigé'];
@@ -74,6 +75,11 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
   const [subjects, setSubjects] = useState<CnedTemplateSubject[]>([]);
   const [definitions, setDefinitions] = useState<CnedDefinition[]>([]);
   const [students, setStudents] = useState<StudentSummary[]>([]);
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [newGroup, setNewGroup] = useState({ name: '', type: 'class', level: '', schoolYearId: '' });
+  const [enrollDraft, setEnrollDraft] = useState({ studentId: '', groupId: '', schoolYearId: '' });
+  const [targetDraft, setTargetDraft] = useState<Record<string, string>>({});
+  const [targetGroup, setTargetGroup] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('Tous');
   const [draftName, setDraftName] = useState('');
@@ -92,10 +98,11 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
     if (demo) return;
     setLoading(true);
     try {
-      const [board, catalog, studentList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null)]);
+      const [board, catalog, studentList, groupList] = await Promise.all([loadCnedBoard(), isStaff ? loadCnedTemplates() : Promise.resolve(null), isStaff ? loadStudents() : Promise.resolve(null), isStaff ? loadGroups() : Promise.resolve(null)]);
       setItems(board.items);
       if (catalog) { setTemplates(catalog.templates); setSubjects(catalog.subjects); setDefinitions(catalog.definitions); }
       if (studentList) setStudents(studentList.students);
+      if (groupList) setGroups(groupList.groups);
     } catch (error: unknown) {
       toast.error(errorMessage(error));
     } finally {
@@ -246,8 +253,52 @@ export function CnedView({ demo = false, rows = [], late = [], studentName = () 
                   </div>
                 </div>
               )}
+
+              {template.status === 'published' && groups.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <small className="muted">Objectifs d’envoi par groupe :</small>
+                  <select value={targetGroup[template.id] ?? ''} onChange={(event) => setTargetGroup((current) => ({ ...current, [template.id]: event.target.value }))} aria-label="Groupe">
+                    <option value="">Choisir un groupe…</option>
+                    {groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+                  </select>
+                  {targetGroup[template.id] && subjects.filter((subject) => subject.template_id === template.id).map((subject) => (
+                    <div key={subject.id} style={{ margin: '6px 0 0 18px' }}>
+                      <strong>{subject.name}</strong>
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+                        {definitions.filter((def) => def.template_subject_id === subject.id).map((def) => {
+                          const key = `${targetGroup[template.id]}:${def.id}`;
+                          return (
+                            <label key={def.id} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              {def.reference}
+                              <input type="date" value={targetDraft[key] ?? ''} onChange={(event) => setTargetDraft((current) => ({ ...current, [key]: event.target.value }))} onBlur={() => { if (targetDraft[key]) void run({ action: 'cned-set-target', groupId: targetGroup[template.id], assignmentDefinitionId: def.id, targetDate: targetDraft[key] }, `Objectif ${def.reference} enregistré`); }} />
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
+
+          <div style={{ borderTop: '1px solid #e5eae7', padding: '14px 20px' }}>
+            <strong>Classes & groupes ({groups.length})</strong>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8, alignItems: 'end' }}>
+              <label>Nom<input value={newGroup.name} onChange={(event) => setNewGroup((current) => ({ ...current, name: event.target.value }))} placeholder="3e A" /></label>
+              <label>Type<select value={newGroup.type} onChange={(event) => setNewGroup((current) => ({ ...current, type: event.target.value }))}><option value="class">Classe</option><option value="support">Soutien</option><option value="language">Langue</option><option value="activity">Activité</option></select></label>
+              <label>Niveau<input value={newGroup.level} onChange={(event) => setNewGroup((current) => ({ ...current, level: event.target.value }))} placeholder="3e" /></label>
+              <label>Année<select value={newGroup.schoolYearId} onChange={(event) => setNewGroup((current) => ({ ...current, schoolYearId: event.target.value }))}><option value="">Choisir…</option>{schoolYears.map((year) => <option key={year.id} value={year.id}>{year.label}</option>)}</select></label>
+              <button className="button secondary" disabled={busy || !newGroup.name || !newGroup.schoolYearId} onClick={() => void run({ action: 'group-create', ...newGroup }, 'Groupe créé')}>Créer le groupe</button>
+            </div>
+            {groups.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'end' }}>
+                <label>Élève<select value={enrollDraft.studentId} onChange={(event) => setEnrollDraft((current) => ({ ...current, studentId: event.target.value }))}><option value="">Choisir…</option>{students.map((student) => <option key={student.id} value={student.id}>{student.first_name} {student.last_name}</option>)}</select></label>
+                <label>Groupe<select value={enrollDraft.groupId} onChange={(event) => setEnrollDraft((current) => ({ ...current, groupId: event.target.value, schoolYearId: groups.find((group) => group.id === event.target.value)?.school_year_id ?? current.schoolYearId }))}><option value="">Choisir…</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name} ({group.members})</option>)}</select></label>
+                <button className="button secondary" disabled={busy || !enrollDraft.studentId || !enrollDraft.groupId} onClick={() => void run({ action: 'student-enroll', ...enrollDraft }, 'Élève inscrit au groupe')}>Inscrire</button>
+              </div>
+            )}
+          </div>
 
           <div style={{ borderTop: '1px solid #e5eae7', padding: '14px 20px', display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
             <label>Prénom élève<input value={newStudent.firstName} onChange={(event) => setNewStudent((current) => ({ ...current, firstName: event.target.value }))} /></label>

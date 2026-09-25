@@ -95,8 +95,23 @@ export async function loadStudents(): Promise<{ students: StudentSummary[] }> {
   return parseResponse<{ students: StudentSummary[] } & ErrorResponse>(response, 'Chargement des élèves impossible.');
 }
 
+export type GroupSummary = { id: string; name: string; type: 'class' | 'support' | 'language' | 'activity'; level: string | null; school_year_id: string; campus_id: string | null; members: number };
+
+export async function loadGroups(): Promise<{ groups: GroupSummary[] }> {
+  const response = await fetch('/api/v1/data?domain=groups');
+  return parseResponse<{ groups: GroupSummary[] } & ErrorResponse>(response, 'Chargement des groupes impossible.');
+}
+
 export async function createStudent(data: { firstName: string; lastName: string; campusId?: string; birthDate?: string }): Promise<MutationResponse> {
   return action({ action: 'student-create', ...data }, 'Création de l’élève impossible.');
+}
+
+export async function createGroup(data: { name: string; schoolYearId: string; type?: string; level?: string; campusId?: string }): Promise<MutationResponse> {
+  return action({ action: 'group-create', ...data }, 'Création du groupe impossible.');
+}
+
+export async function enrollStudent(data: { studentId: string; groupId: string; schoolYearId: string; startsOn?: string }): Promise<MutationResponse> {
+  return action({ action: 'student-enroll', ...data }, 'Inscription au groupe impossible.');
 }
 
 export async function cnedAction(body: Record<string, unknown>): Promise<MutationResponse> {
